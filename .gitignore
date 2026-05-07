@@ -25,6 +25,7 @@ ENV/
 .env
 .secrets.toml
 config/.secrets.toml
+config/.token.json
 
 # Testing
 .pytest_cache/

@@ -73,7 +73,12 @@ def build_engine(registry: StrategyRegistry) -> TradingEngine:
 async def run() -> None:
     registry = build_registry()
     engine = build_engine(registry)
-    stream = MarketDataStream()
+    mock = settings.get("mock", True)
+    stream = MarketDataStream(
+        app_key=settings.get("kis_app_key", ""),
+        app_secret=settings.get("kis_app_secret", ""),
+        mock=mock,
+    )
 
     stream.on_tick(engine.on_tick)
     stream.on_orderbook(engine.on_orderbook)
@@ -85,7 +90,7 @@ async def run() -> None:
 
     logger.info(
         "scalpy.started",
-        mock=settings.get("mock", True),
+        mock=mock,
         symbols=symbols,
         strategies=[s.name for s in registry.all()],
     )
