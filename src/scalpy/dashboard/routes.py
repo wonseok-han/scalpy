@@ -66,6 +66,7 @@ def _build_realtime_state() -> dict[str, Any]:
     """SSE 푸시용 — API 호출 없이 인메모리 데이터만 사용."""
     mock = settings.get("mock", True)
     strategy_names = {s.name: s.display_name for s in _registry_ref.all()} if _registry_ref else {}
+    strategy_enabled = {s.name: s.enabled for s in _registry_ref.all()} if _registry_ref else {}
     names = _state.symbol_names if _state else {}
 
     positions: list[dict[str, Any]] = []
@@ -84,16 +85,19 @@ def _build_realtime_state() -> dict[str, Any]:
                 "strategy": p.strategy,
             })
 
-    cached_balance = str(_engine_ref._cached_balance) if _engine_ref and _engine_ref._cached_balance else "-"
+    cash_balance = _engine_ref._cached_balance if _engine_ref and _engine_ref._cached_balance else Decimal("0")
+    position_value = sum(p.current_price * p.quantity for p in _engine_ref.positions.all()) if _engine_ref else Decimal("0")
+    total_balance = cash_balance + position_value
     status: dict[str, Any] = {
         "running": _engine_ref._running if _engine_ref else False,
-        "balance": cached_balance,
-        "daily_pnl": str(getattr(_engine_ref._broker, '_daily_pnl', 0)) if _engine_ref else "0",
+        "balance": str(total_balance) if _engine_ref else "-",
+        "daily_pnl": str(total_balance - _engine_ref._broker._initial_balance) if _engine_ref and hasattr(_engine_ref._broker, '_initial_balance') else str(getattr(_engine_ref._broker, '_daily_pnl', 0)) if _engine_ref else "0",
         "last_tick_at": _state.last_tick_at if _state else "",
         "position_count": len(positions),
         "screening_count": len(_state.screening_symbols) if _state else 0,
         "mock": mock,
         "strategies": strategy_names,
+        "strategy_enabled": strategy_enabled,
     }
 
     screening: dict[str, Any] = {"symbols": [], "names": {}, "next_scan_at": ""}
@@ -273,6 +277,18 @@ async def rescan() -> dict[str, Any]:
         return {"success": True, "symbols": symbols}
     except Exception as e:
         return {"success": False, "error": str(e)}
+
+
+@router.post("/strategies/{name}/toggle")
+async def toggle_strategy(name: str) -> dict[str, Any]:
+    if _registry_ref is None:
+        return {"success": False, "error": "registry not available"}
+    result = _registry_ref.toggle(name)
+    if result is None:
+        return {"success": False, "error": "strategy not found"}
+    if _sse:
+        _sse.broadcast("state", _build_realtime_state())
+    return {"success": True, "name": name, "enabled": result}
 
 
 @router.get("/events")

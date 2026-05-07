@@ -12,7 +12,9 @@ class TestTradingEngine:
     def setup_method(self) -> None:
         self.broker = MockBroker(initial_balance=Decimal("10000000"))
         self.registry = StrategyRegistry()
-        self.registry.register(RSIStrategy())
+        rsi = RSIStrategy()
+        rsi.cooldown_seconds = 0
+        self.registry.register(rsi)
         self.risk = RiskManager(stop_loss_ratio=0.02, take_profit_ratio=0.03)
         self.engine = TradingEngine(self.broker, self.registry, self.risk)
 
@@ -36,12 +38,10 @@ class TestTradingEngine:
         for i in range(16):
             await self.engine.on_tick("005930", Decimal(str(100 - i * 2)), 100)
 
-        assert len(self.engine.positions.all()) > 0
+        buy_orders = [o for o in self.engine.orders.get_history() if o.side == Side.BUY]
+        assert len(buy_orders) > 0
 
-        # Big price drop triggers stop loss
-        await self.engine.on_tick("005930", Decimal("50"), 100)
-
-        # Position should be closed, then immediately reopened by RSI signal
+        # Stop loss may already have triggered within the loop.
         # Verify at least one sell order in history (the stop-loss close)
         sell_orders = [o for o in self.engine.orders.get_history() if o.side == Side.SELL]
         assert len(sell_orders) > 0

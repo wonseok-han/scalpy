@@ -13,9 +13,14 @@ class MACrossStrategy(BaseStrategy):
     description = "Moving Average Crossover — short MA crosses long MA"
 
     def __init__(self) -> None:
+        self._init_base()
         self.short_window: int = 5
         self.long_window: int = 20
         self._prices: dict[str, deque[Decimal]] = {}
+
+    def reset(self) -> None:
+        super().reset()
+        self._prices.clear()
 
     def _get_prices(self, symbol: str) -> deque[Decimal]:
         if symbol not in self._prices:
@@ -45,13 +50,13 @@ class MACrossStrategy(BaseStrategy):
         if prev_short is None:
             return None
 
-        # Golden cross: short crosses above long
         if prev_short <= long_ma < short_ma:
-            return Signal(symbol, Side.BUY, self.name, price, 0, 0.7, datetime.now())
+            if self._check_cooldown(symbol, "BUY"):
+                return Signal(symbol, Side.BUY, self.name, price, 0, 0.7, datetime.now())
 
-        # Dead cross: short crosses below long
         if prev_short >= long_ma > short_ma:
-            return Signal(symbol, Side.SELL, self.name, price, 0, 0.7, datetime.now())
+            if self._check_cooldown(symbol, "SELL"):
+                return Signal(symbol, Side.SELL, self.name, price, 0, 0.7, datetime.now())
 
         return None
 

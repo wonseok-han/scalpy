@@ -13,10 +13,15 @@ class RSIStrategy(BaseStrategy):
     description = "RSI Overbought/Oversold — buy below 30, sell above 70"
 
     def __init__(self) -> None:
+        self._init_base()
         self.window: int = 14
         self.oversold: int = 30
         self.overbought: int = 70
         self._prices: dict[str, deque[Decimal]] = {}
+
+    def reset(self) -> None:
+        super().reset()
+        self._prices.clear()
 
     def _get_prices(self, symbol: str) -> deque[Decimal]:
         if symbol not in self._prices:
@@ -45,9 +50,9 @@ class RSIStrategy(BaseStrategy):
         if rsi is None:
             return None
 
-        if rsi < self.oversold:
+        if rsi < self.oversold and self._check_cooldown(symbol, "BUY"):
             return Signal(symbol, Side.BUY, self.name, price, 0, 0.6, datetime.now())
-        if rsi > self.overbought:
+        if rsi > self.overbought and self._check_cooldown(symbol, "SELL"):
             return Signal(symbol, Side.SELL, self.name, price, 0, 0.6, datetime.now())
 
         return None

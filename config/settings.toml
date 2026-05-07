@@ -5,6 +5,23 @@ mock = true
 # PostgreSQL 연결 문자열 (docker-compose 기본값)
 database_url = "postgresql://scalpy:scalpy@localhost:5432/scalpy"
 
+[default.kis_api.ws_urls]
+# KIS WebSocket 실시간 시세 URL
+virtual = "ws://ops.koreainvestment.com:31000"
+real = "ws://ops.koreainvestment.com:21000"
+
+[default.kis_api.rest_urls]
+# KIS REST API URL
+virtual = "https://openapivts.koreainvestment.com:29443"
+real = "https://openapi.koreainvestment.com:9443"
+
+[default.simulator]
+# MockBroker(KIS 키 미설정) 시 가상 시세 생성기 설정
+# 틱 생성 간격 (초, 0.5 = 초당 2회)
+interval = 0.5
+# 가격 변동 폭 (0.002 = 0.2%, 높을수록 변동성 큼)
+volatility = 0.01
+
 [default.trading]
 # 서버 시작 시 자동으로 트레이딩 시작 (false: 대시보드에서 수동 시작)
 auto_start = false
@@ -12,10 +29,12 @@ auto_start = false
 symbols = ["005930", "000660"]
 # 종목당 최대 보유 수량
 max_position_size = 100
+# 동시 보유 최대 포지션 수 (초과 시 신규 매수 차단)
+max_open_positions = 3
 # 손절 비율 (0.02 = 2%, 평균단가 대비 하락 시 자동 청산)
-stop_loss_ratio = 0.02
-# 익절 비율 (0.03 = 3%, 평균단가 대비 상승 시 자동 청산)
-take_profit_ratio = 0.03
+stop_loss_ratio = 0.005
+# 익절 비율 (0.01 = 1%, 평균단가 대비 상승 시 자동 청산)
+take_profit_ratio = 0.01
 
 [default.screening]
 # 자동 종목 스크리닝 활성화 (false: settings.toml의 symbols 사용)
@@ -42,21 +61,25 @@ bot_token = ""
 chat_id = ""
 
 [default.strategies]
-# 활성화할 전략 목록 (비활성화하려면 목록에서 제거)
+# 초기 활성 전략 (UI에서 런타임 토글 가능)
 # 사용 가능: ma_cross, bollinger, rsi, orderbook, vwap
-enabled = ["ma_cross", "bollinger", "rsi", "orderbook", "vwap"]
+# orderbook: 호가창 노이즈 과다, vwap: 서버 시작 시점 누적 문제, rsi: 추세장 역행 위험
+enabled = ["ma_cross", "bollinger"]
 
 [default.strategies.ma_cross]
 # 단기 이동평균 기간 (최근 N개 체결가의 평균)
 short_window = 5
 # 장기 이동평균 기간 (골든/데드크로스 판단 기준)
 long_window = 20
+# 같은 종목 같은 방향 신호 재발생 쿨다운 (초)
+cooldown_seconds = 30
 
 [default.strategies.bollinger]
 # 볼린저밴드 이동평균 기간
 window = 20
 # 표준편차 배수 (밴드 폭 결정, 클수록 넓은 밴드)
 num_std = 2.0
+cooldown_seconds = 30
 
 [default.strategies.rsi]
 # RSI 계산 기간
@@ -65,13 +88,16 @@ window = 14
 oversold = 30
 # 과매수 기준 (이상이면 매도 신호)
 overbought = 70
+cooldown_seconds = 30
 
 [default.strategies.orderbook]
 # 매수/매도 호가잔량 비율 임계값 (이상이면 신호 발생)
 # 1.5 = 매수잔량이 매도잔량의 1.5배 이상이면 매수 신호
 bid_ask_ratio_threshold = 1.5
+cooldown_seconds = 60
 
 [default.strategies.vwap]
 # VWAP 대비 가격 이탈 임계값 (0.005 = 0.5%)
 # 현재가가 VWAP보다 0.5% 이상 낮으면 매수, 높으면 매도
 deviation_threshold = 0.005
+cooldown_seconds = 30

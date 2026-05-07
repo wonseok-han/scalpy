@@ -32,14 +32,15 @@ def build_registry() -> StrategyRegistry:
     ]
     enabled = settings.get("strategies.enabled", [s.name for s in all_strategies])
     for s in all_strategies:
-        if s.name in enabled:
-            registry.register(s)
+        registry.register(s)
+        if s.name not in enabled:
+            s.enabled = False
 
     strategy_config = {}
-    for name in enabled:
-        params = settings.get(f"strategies.{name}", {})
+    for s in all_strategies:
+        params = settings.get(f"strategies.{s.name}", {})
         if params:
-            strategy_config[name] = dict(params)
+            strategy_config[s.name] = dict(params)
     if strategy_config:
         registry.configure_all(strategy_config)
 
@@ -70,6 +71,7 @@ def build_engine(registry: StrategyRegistry) -> tuple[TradingEngine, BaseBroker]
         stop_loss_ratio=trading.get("stop_loss_ratio", 0.02),
         take_profit_ratio=trading.get("take_profit_ratio", 0.03),
         max_position_size=trading.get("max_position_size", 100),
+        max_open_positions=trading.get("max_open_positions", 3),
     )
     return TradingEngine(broker, registry, risk), broker
 
@@ -236,18 +238,26 @@ async def run() -> None:
 
     await stop_event.wait()
 
-    await stream.stop()
-    await engine.stop()
+    async def _shutdown() -> None:
+        await stream.stop()
+        await engine.stop()
 
-    if dashboard_task is not None:
-        server = getattr(dashboard_task, '_uvicorn_server', None)
-        if server:
-            server.should_exit = True
-        dashboard_task.cancel()
-        try:
-            await dashboard_task
-        except asyncio.CancelledError:
-            pass
+        if dashboard_task is not None:
+            server = getattr(dashboard_task, '_uvicorn_server', None)
+            if server:
+                server.should_exit = True
+            dashboard_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await dashboard_task
+
+    try:
+        await asyncio.wait_for(_shutdown(), timeout=5)
+    except asyncio.TimeoutError:
+        logger.warning("scalpy.shutdown_timeout")
+
+    for task in asyncio.all_tasks():
+        if task is not asyncio.current_task() and not task.done():
+            task.cancel()
 
     logger.info("scalpy.stopped")
 
