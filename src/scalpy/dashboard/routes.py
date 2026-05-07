@@ -91,7 +91,7 @@ def _build_realtime_state() -> dict[str, Any]:
     status: dict[str, Any] = {
         "running": _engine_ref._running if _engine_ref else False,
         "balance": str(total_balance) if _engine_ref else "-",
-        "daily_pnl": str(getattr(_engine_ref._broker, '_daily_pnl', 0)) if _engine_ref else "0",
+        "daily_pnl": str(total_balance - _engine_ref._broker._initial_balance) if _engine_ref and hasattr(_engine_ref._broker, '_initial_balance') else str(getattr(_engine_ref._broker, '_daily_pnl', 0)) if _engine_ref else "0",
         "last_tick_at": _state.last_tick_at if _state else "",
         "position_count": len(positions),
         "screening_count": len(_state.screening_symbols) if _state else 0,
