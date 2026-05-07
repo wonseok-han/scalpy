@@ -116,9 +116,19 @@ class MarketDataStream:
 
     async def start(self, symbols: list[str]) -> None:
         if not self._app_key:
+            from scalpy.data.simulator import MarketSimulator
+
             self._running = True
             self._subscribed = set(symbols)
-            logger.info("market_data_stream.started_local", symbols=symbols)
+            sim_cfg = settings.get("simulator", {})
+            self._simulator = MarketSimulator(
+                self,
+                symbols,
+                interval=sim_cfg.get("interval", 0.5),
+                volatility=sim_cfg.get("volatility", 0.002),
+            )
+            await self._simulator.start()
+            logger.info("market_data_stream.started_simulator", symbols=symbols)
             return
 
         self._approval_key = _get_approval_key(self._app_key, self._app_secret, mock=self._mock)
@@ -237,6 +247,8 @@ class MarketDataStream:
                 await asyncio.sleep(0.05)
 
         self._subscribed = new_set
+        if hasattr(self, '_simulator') and self._simulator:
+            self._simulator.update_symbols(list(new_set))
         logger.info(
             "market_data_stream.subscriptions_updated",
             removed=list(to_remove),
@@ -246,6 +258,9 @@ class MarketDataStream:
 
     async def stop(self) -> None:
         self._running = False
+        if hasattr(self, '_simulator') and self._simulator:
+            await self._simulator.stop()
+            self._simulator = None
         if self._ws:
             try:
                 await asyncio.wait_for(self._ws.close(), timeout=3)

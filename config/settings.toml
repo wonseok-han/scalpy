@@ -15,6 +15,13 @@ real = "ws://ops.koreainvestment.com:21000"
 virtual = "https://openapivts.koreainvestment.com:29443"
 real = "https://openapi.koreainvestment.com:9443"
 
+[default.simulator]
+# MockBroker(KIS 키 미설정) 시 가상 시세 생성기 설정
+# 틱 생성 간격 (초, 0.5 = 초당 2회)
+interval = 0.5
+# 가격 변동 폭 (0.002 = 0.2%, 높을수록 변동성 큼)
+volatility = 0.01
+
 [default.trading]
 # 서버 시작 시 자동으로 트레이딩 시작 (false: 대시보드에서 수동 시작)
 auto_start = false

@@ -894,16 +894,22 @@ function updatePositions(list){
   }).join('');
 }
 
+let _lastTradeCount=0;
 function updateTrades(list){
   const tb=document.getElementById('trades');
   document.getElementById('trade-badge').textContent=list.length+'건';
   if(!list.length){
     tb.innerHTML='<tr><td class="empty-row" colspan="7">거래 없음</td></tr>';
+    _lastTradeCount=0;
     return;
   }
-  tb.innerHTML=list.slice(0,100).map(t=>{
+  const newCount=list.length-_lastTradeCount;
+  if(newCount<=0 && _lastTradeCount>0) return;
+  const items=list.slice(0,100);
+  const rows=items.map((t,i)=>{
     const pnl=t.pnl?Number(t.pnl):0;
-    return `<tr class="new-row">
+    const cls=i<newCount&&_lastTradeCount>0?'new-row':'';
+    return `<tr class="${cls}">
       <td>${t.time}</td>
       <td><span class="side-tag ${t.side==='buy'?'buy':'sell'}">${t.side==='buy'?'BUY':'SELL'}</span></td>
       <td>${_names[t.symbol]||t.symbol}<span class="text-sub">${t.symbol}</span></td>
@@ -912,7 +918,9 @@ function updateTrades(list){
       <td>${stratLabel(t.strategy)}</td>
       <td class="text-right">${t.pnl?`<span class="pnl-chip ${pnlType(pnl)}">${pnlSign(pnl)}</span>`:'-'}</td>
     </tr>`;
-  }).join('');
+  });
+  tb.innerHTML=rows.join('');
+  _lastTradeCount=list.length;
 }
 
 function updateScreening(s){
@@ -929,22 +937,30 @@ function updateScreening(s){
   ).join('');
 }
 
+let _lastSignalCount=0;
 function updateSignals(list){
   const tb=document.getElementById('signals');
   document.getElementById('signal-badge').textContent=list.length+'건';
   if(!list.length){
     tb.innerHTML='<tr><td class="empty-row" colspan="5">신호 없음</td></tr>';
+    _lastSignalCount=0;
     return;
   }
-  tb.innerHTML=list.slice(0,50).map(s=>
-    `<tr class="new-row">
+  const newCount=list.length-_lastSignalCount;
+  if(newCount<=0 && _lastSignalCount>0) return;
+  const items=list.slice(0,50);
+  const rows=items.map((s,i)=>{
+    const cls=i<newCount&&_lastSignalCount>0?'new-row':'';
+    return `<tr class="${cls}">
       <td>${s.time}</td>
       <td><span class="side-tag ${s.side==='buy'?'buy':'sell'}">${s.side==='buy'?'BUY':'SELL'}</span></td>
       <td>${_names[s.symbol]||s.symbol}</td>
       <td>${stratLabel(s.strategy)}</td>
       <td class="text-right">${fmt(s.price)}</td>
-    </tr>`
-  ).join('');
+    </tr>`;
+  });
+  tb.innerHTML=rows.join('');
+  _lastSignalCount=list.length;
 }
 
 async function liquidateOne(symbol){

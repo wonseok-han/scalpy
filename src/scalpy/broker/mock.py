@@ -18,8 +18,10 @@ class MockBroker(BaseBroker):
 
     def __init__(self, initial_balance: Decimal = Decimal("10000000")) -> None:
         self._balance = initial_balance
+        self._initial_balance = initial_balance
         self._positions: dict[str, Position] = {}
         self._connected = False
+        self._daily_pnl = Decimal("0")
 
     async def connect(self) -> None:
         self._connected = True
@@ -48,6 +50,10 @@ class MockBroker(BaseBroker):
                 strategy=order.strategy,
             )
         else:
+            pos = self._positions.get(order.symbol)
+            if pos:
+                realized = (order.price - pos.avg_price) * order.quantity
+                self._daily_pnl += realized
             self._balance += cost
             self._positions.pop(order.symbol, None)
 
