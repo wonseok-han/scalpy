@@ -1,0 +1,63 @@
+from collections import deque
+from datetime import datetime
+from decimal import Decimal
+
+from scalpy.core.enums import Side
+from scalpy.core.models import Signal
+from scalpy.strategy.base import BaseStrategy
+
+
+class MACrossStrategy(BaseStrategy):
+    name = "ma_cross"
+    description = "Moving Average Crossover — short MA crosses long MA"
+
+    def __init__(self) -> None:
+        self.short_window: int = 5
+        self.long_window: int = 20
+        self._prices: dict[str, deque[Decimal]] = {}
+
+    def _get_prices(self, symbol: str) -> deque[Decimal]:
+        if symbol not in self._prices:
+            self._prices[symbol] = deque(maxlen=self.long_window + 1)
+        return self._prices[symbol]
+
+    def _ma(self, prices: deque[Decimal], window: int) -> Decimal | None:
+        if len(prices) < window:
+            return None
+        recent = list(prices)[-window:]
+        return Decimal(sum(recent)) / window
+
+    async def on_tick(self, symbol: str, price: Decimal, volume: int) -> Signal | None:
+        prices = self._get_prices(symbol)
+        prices.append(price)
+
+        short_ma = self._ma(prices, self.short_window)
+        long_ma = self._ma(prices, self.long_window)
+        if short_ma is None or long_ma is None:
+            return None
+
+        prev_prices_len = len(prices)
+        if prev_prices_len < self.long_window + 1:
+            return None
+
+        prev_short = self._ma(deque(list(prices)[:-1], maxlen=len(prices)), self.short_window)
+        if prev_short is None:
+            return None
+
+        # Golden cross: short crosses above long
+        if prev_short <= long_ma < short_ma:
+            return Signal(symbol, Side.BUY, self.name, price, 0, 0.7, datetime.now())
+
+        # Dead cross: short crosses below long
+        if prev_short >= long_ma > short_ma:
+            return Signal(symbol, Side.SELL, self.name, price, 0, 0.7, datetime.now())
+
+        return None
+
+    async def on_orderbook(
+        self,
+        symbol: str,
+        asks: list[tuple[Decimal, int]],
+        bids: list[tuple[Decimal, int]],
+    ) -> Signal | None:
+        return None
