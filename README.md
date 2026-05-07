@@ -137,7 +137,3 @@ python scripts/test_websocket.py
 - 실거래 전환은 `config/settings.toml`에서만 가능 (CLI 인자 전환 불가)
 - 손절/익절 로직 없이는 주문 실행 불가
 - API 키는 `.secrets.toml`에 저장 (gitignore 포함)
-
-## 라이선스
-
-Private — 개인 사용 목적

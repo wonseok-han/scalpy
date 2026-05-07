@@ -1,31 +1,51 @@
 [default]
+# 모의투자 모드 (true: 모의투자, false: 실거래)
+# 실거래 전환은 이 파일에서만 가능 (CLI 인자 불가)
 mock = true
+# PostgreSQL 연결 문자열 (docker-compose 기본값)
 database_url = "postgresql://scalpy:scalpy@localhost:5432/scalpy"
 
 [default.trading]
+# 자동매매 대상 종목코드 목록 (최대 20종목, WebSocket 구독 제한)
 symbols = ["005930", "000660"]
+# 종목당 최대 보유 수량
 max_position_size = 100
+# 손절 비율 (0.02 = 2%, 평균단가 대비 하락 시 자동 청산)
 stop_loss_ratio = 0.02
+# 익절 비율 (0.03 = 3%, 평균단가 대비 상승 시 자동 청산)
 take_profit_ratio = 0.03
 
 [default.strategies]
+# 활성화할 전략 목록 (비활성화하려면 목록에서 제거)
+# 사용 가능: ma_cross, bollinger, rsi, orderbook, vwap
 enabled = ["ma_cross", "bollinger", "rsi", "orderbook", "vwap"]
 
 [default.strategies.ma_cross]
+# 단기 이동평균 기간 (최근 N개 체결가의 평균)
 short_window = 5
+# 장기 이동평균 기간 (골든/데드크로스 판단 기준)
 long_window = 20
 
 [default.strategies.bollinger]
+# 볼린저밴드 이동평균 기간
 window = 20
+# 표준편차 배수 (밴드 폭 결정, 클수록 넓은 밴드)
 num_std = 2.0
 
 [default.strategies.rsi]
+# RSI 계산 기간
 window = 14
+# 과매도 기준 (이하이면 매수 신호)
 oversold = 30
+# 과매수 기준 (이상이면 매도 신호)
 overbought = 70
 
 [default.strategies.orderbook]
+# 매수/매도 호가잔량 비율 임계값 (이상이면 신호 발생)
+# 1.5 = 매수잔량이 매도잔량의 1.5배 이상이면 매수 신호
 bid_ask_ratio_threshold = 1.5
 
 [default.strategies.vwap]
+# VWAP 대비 가격 이탈 임계값 (0.005 = 0.5%)
+# 현재가가 VWAP보다 0.5% 이상 낮으면 매수, 높으면 매도
 deviation_threshold = 0.005
