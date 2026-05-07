@@ -1,3 +1,4 @@
+import asyncio
 import json
 from collections.abc import Callable
 from datetime import datetime
@@ -5,6 +6,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
+import requests
 import structlog
 
 from scalpy.broker.base import BaseBroker
@@ -160,6 +162,71 @@ class KISBroker(BaseBroker):
 
         deposit = self._api.get_kr_deposit()
         return Decimal(str(deposit))
+
+    async def get_top_volume_stocks(self, count: int = 30) -> list[dict[str, Any]]:
+        if not self._connected or self._api is None:
+            return []
+
+        # 거래량 순위 API는 모의투자 서버 미지원 — 실거래 서버 조회 전용
+        base_url = "https://openapi.koreainvestment.com:9443"
+        headers = {
+            "content-type": "application/json; charset=utf-8",
+            "authorization": f"Bearer {self._api.token.value}",
+            "appkey": self._app_key,
+            "appsecret": self._app_secret,
+            "tr_id": "FHPST01710000",
+            "custtype": "P",
+        }
+        params = {
+            "FID_COND_MRKT_DIV_CODE": "J",
+            "FID_COND_SCR_DIV_CODE": "20171",
+            "FID_INPUT_ISCD": "0000",
+            "FID_DIV_CLS_CODE": "0",
+            "FID_BLNG_CLS_CODE": "0",
+            "FID_TRGT_CLS_CODE": "111111111",
+            "FID_TRGT_EXLS_CLS_CODE": "0000000000",
+            "FID_INPUT_PRICE_1": "0",
+            "FID_INPUT_PRICE_2": "0",
+            "FID_VOL_CNT": "0",
+            "FID_INPUT_DATE_1": "",
+        }
+        for attempt in range(3):
+            try:
+                await asyncio.sleep(0.1)
+                resp = requests.get(
+                    f"{base_url}/uapi/domestic-stock/v1/quotations/volume-rank",
+                    headers=headers,
+                    params=params,
+                    timeout=10,
+                )
+                if resp.status_code == 429:
+                    logger.warning("kis_broker.rate_limited", attempt=attempt + 1)
+                    await asyncio.sleep(1)
+                    continue
+                resp.raise_for_status()
+                data = resp.json()
+                output = data.get("output", [])
+
+                stocks: list[dict[str, Any]] = []
+                for item in output[:count]:
+                    symbol = item.get("mksc_shrn_iscd", "")
+                    if not symbol:
+                        continue
+                    stocks.append({
+                        "symbol": symbol,
+                        "name": item.get("hts_kor_isnm", ""),
+                        "volume": int(item.get("acml_vol", 0)),
+                        "price": Decimal(item.get("stck_prpr", "0")),
+                        "change_rate": float(item.get("prdy_ctrt", "0")),
+                        "volume_turnover": float(item.get("vol_tnrt", "0")),
+                    })
+                logger.info("kis_broker.top_volume_fetched", count=len(stocks))
+                return stocks
+            except Exception as e:
+                logger.error("kis_broker.top_volume_failed", error=str(e), attempt=attempt + 1)
+                if attempt < 2:
+                    await asyncio.sleep(1)
+        return []
 
     async def subscribe_market_data(
         self, symbols: list[str], callback: Callable[..., Any]

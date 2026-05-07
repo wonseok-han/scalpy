@@ -46,20 +46,23 @@ def build_registry() -> StrategyRegistry:
 
 
 def build_broker() -> BaseBroker:
-    if settings.get("mock", True):
+    mock = settings.get("mock", True)
+    app_key = settings.get("kis_app_key", "")
+
+    if not app_key:
         return MockBroker()
 
     from scalpy.broker.kis import KISBroker
 
     return KISBroker(
-        app_key=settings.get("kis_app_key", ""),
+        app_key=app_key,
         app_secret=settings.get("kis_app_secret", ""),
         account_no=settings.get("kis_account_no", ""),
-        mock=False,
+        mock=mock,
     )
 
 
-def build_engine(registry: StrategyRegistry) -> TradingEngine:
+def build_engine(registry: StrategyRegistry) -> tuple[TradingEngine, BaseBroker]:
     broker = build_broker()
     trading = settings.get("trading", {})
     risk = RiskManager(
@@ -67,12 +70,38 @@ def build_engine(registry: StrategyRegistry) -> TradingEngine:
         take_profit_ratio=trading.get("take_profit_ratio", 0.03),
         max_position_size=trading.get("max_position_size", 100),
     )
-    return TradingEngine(broker, registry, risk)
+    return TradingEngine(broker, registry, risk), broker
+
+
+async def _screening_loop(
+    screener: "StockScreener",
+    engine: TradingEngine,
+    stream: MarketDataStream,
+    interval_minutes: int,
+    stop_event: asyncio.Event,
+) -> None:
+    from scalpy.screening import StockScreener  # noqa: F811
+
+    while not stop_event.is_set():
+        try:
+            held = [p.symbol for p in engine.positions.all()]
+            new_symbols = await screener.scan(held_symbols=held)
+            if new_symbols:
+                await stream.update_subscriptions(new_symbols)
+                await engine.update_symbols(new_symbols)
+        except Exception as e:
+            logger.error("screening_loop.error", error=str(e))
+
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=interval_minutes * 60)
+            break
+        except asyncio.TimeoutError:
+            pass
 
 
 async def run() -> None:
     registry = build_registry()
-    engine = build_engine(registry)
+    engine, broker = build_engine(registry)
     mock = settings.get("mock", True)
     stream = MarketDataStream(
         app_key=settings.get("kis_app_key", ""),
@@ -83,19 +112,42 @@ async def run() -> None:
     stream.on_tick(engine.on_tick)
     stream.on_orderbook(engine.on_orderbook)
 
-    symbols = settings.get("trading.symbols", ["005930"])
-
     await engine.start()
-    await stream.start(symbols)
+
+    screening_cfg = settings.get("screening", {})
+    screening_enabled = screening_cfg.get("enabled", False)
+
+    stop_event = asyncio.Event()
+
+    if screening_enabled:
+        from scalpy.screening import StockScreener
+
+        screener = StockScreener(
+            broker=broker,
+            max_stocks=screening_cfg.get("max_stocks", 5),
+            min_change_rate=screening_cfg.get("min_change_rate", 2.0),
+            min_volume=screening_cfg.get("min_volume", 100_000),
+        )
+        held = [p.symbol for p in engine.positions.all()]
+        symbols = await screener.scan(held_symbols=held)
+        if not symbols:
+            symbols = settings.get("trading.symbols", ["005930"])
+        await stream.start(symbols)
+
+        interval = screening_cfg.get("interval_minutes", 30)
+        asyncio.create_task(_screening_loop(screener, engine, stream, interval, stop_event))
+        logger.info("scalpy.screening_enabled", interval_minutes=interval)
+    else:
+        symbols = settings.get("trading.symbols", ["005930"])
+        await stream.start(symbols)
 
     logger.info(
         "scalpy.started",
         mock=mock,
         symbols=symbols,
         strategies=[s.name for s in registry.all()],
+        screening=screening_enabled,
     )
-
-    stop_event = asyncio.Event()
 
     def _signal_handler() -> None:
         logger.info("scalpy.shutdown_requested")

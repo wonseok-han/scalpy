@@ -15,6 +15,18 @@ stop_loss_ratio = 0.02
 # 익절 비율 (0.03 = 3%, 평균단가 대비 상승 시 자동 청산)
 take_profit_ratio = 0.03
 
+[default.screening]
+# 자동 종목 스크리닝 활성화 (false: settings.toml의 symbols 사용)
+enabled = true
+# 동시 트레이딩 최대 종목 수
+max_stocks = 5
+# 최소 등락률 임계값 (2.0 = 2%, 전일 대비)
+min_change_rate = 2.0
+# 최소 거래량 (이하 종목 제외)
+min_volume = 100000
+# 재스크리닝 주기 (분)
+interval_minutes = 30
+
 [default.strategies]
 # 활성화할 전략 목록 (비활성화하려면 목록에서 제거)
 # 사용 가능: ma_cross, bollinger, rsi, orderbook, vwap
