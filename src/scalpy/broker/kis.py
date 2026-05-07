@@ -1,12 +1,13 @@
 from collections.abc import Callable
+from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
 import structlog
 
 from scalpy.broker.base import BaseBroker
-from scalpy.core.enums import OrderStatus
-from scalpy.core.exceptions import AuthenticationError
+from scalpy.core.enums import OrderStatus, Side
+from scalpy.core.exceptions import AuthenticationError, OrderError
 from scalpy.core.models import Order, Position
 
 logger = structlog.get_logger()
@@ -26,50 +27,108 @@ class KISBroker(BaseBroker):
         self._account_no = account_no
         self._mock = mock
         self._connected = False
+        self._api: Any = None
 
     async def connect(self) -> None:
         try:
-            from pykis import KoreaInvestment  # noqa: F811
+            from pykis import Api, DomainInfo
         except ImportError as e:
             raise AuthenticationError("pykis 패키지가 설치되지 않았습니다") from e
 
-        self._kis = KoreaInvestment(
-            api_key=self._app_key,
-            api_secret=self._app_secret,
-            account_no=self._account_no,
-            mock_trading=self._mock,
+        domain = DomainInfo("virtual" if self._mock else "real")
+        account_code = self._account_no[:8]
+        product_code = self._account_no[8:].lstrip("-")
+
+        self._api = Api(
+            key_info={"appkey": self._app_key, "appsecret": self._app_secret},
+            domain_info=domain,
+            account_info={"account_code": account_code, "product_code": product_code},
         )
+        self._api.create_token()
         self._connected = True
         mode = "모의투자" if self._mock else "실거래"
         logger.info("kis_broker.connected", mode=mode)
 
     async def disconnect(self) -> None:
+        self._api = None
         self._connected = False
         logger.info("kis_broker.disconnected")
 
     async def place_order(self, order: Order) -> Order:
-        if not self._connected:
+        if not self._connected or self._api is None:
             order.status = OrderStatus.REJECTED
             return order
 
-        # TODO: pykis 주문 API 연동 (API 키 발급 후 구현)
-        order.status = OrderStatus.REJECTED
-        logger.warning("kis_broker.not_implemented", method="place_order")
+        try:
+            price = int(order.price)
+            if order.side == Side.BUY:
+                resp = self._api.buy_kr_stock(order.symbol, order.quantity, price)
+            else:
+                resp = self._api.sell_kr_stock(order.symbol, order.quantity, price)
+
+            if resp.get("rt_cd") == "0":
+                order.status = OrderStatus.FILLED
+                order.filled_at = datetime.now()
+                logger.info(
+                    "kis_broker.order_filled",
+                    symbol=order.symbol,
+                    side=order.side.value,
+                    quantity=order.quantity,
+                    price=price,
+                )
+            else:
+                order.status = OrderStatus.REJECTED
+                logger.warning(
+                    "kis_broker.order_rejected",
+                    symbol=order.symbol,
+                    msg=resp.get("msg1", ""),
+                )
+        except Exception as e:
+            order.status = OrderStatus.REJECTED
+            raise OrderError(f"주문 실패: {e}") from e
+
         return order
 
     async def cancel_order(self, order_id: str) -> bool:
-        logger.warning("kis_broker.not_implemented", method="cancel_order")
-        return False
+        if not self._connected or self._api is None:
+            return False
+
+        try:
+            self._api.cancel_kr_order(order_id)
+            logger.info("kis_broker.order_cancelled", order_id=order_id)
+            return True
+        except Exception as e:
+            logger.error("kis_broker.cancel_failed", order_id=order_id, error=str(e))
+            return False
 
     async def get_positions(self) -> list[Position]:
-        logger.warning("kis_broker.not_implemented", method="get_positions")
-        return []
+        if not self._connected or self._api is None:
+            return []
+
+        df = self._api.get_kr_stock_balance()
+        positions: list[Position] = []
+        for _, row in df.iterrows():
+            positions.append(
+                Position(
+                    symbol=str(row.get("pdno", "")),
+                    side=Side.BUY,
+                    quantity=int(row.get("hldg_qty", 0)),
+                    avg_price=Decimal(str(row.get("pchs_avg_pric", 0))),
+                    current_price=Decimal(str(row.get("prpr", 0))),
+                    strategy="manual",
+                    opened_at=datetime.now(),
+                )
+            )
+        return positions
 
     async def get_balance(self) -> Decimal:
-        logger.warning("kis_broker.not_implemented", method="get_balance")
-        return Decimal("0")
+        if not self._connected or self._api is None:
+            return Decimal("0")
+
+        deposit = self._api.get_kr_deposit()
+        return Decimal(str(deposit))
 
     async def subscribe_market_data(
         self, symbols: list[str], callback: Callable[..., Any]
     ) -> None:
-        logger.warning("kis_broker.not_implemented", method="subscribe_market_data")
+        logger.warning("kis_broker.websocket_not_supported", note="pykis 0.7 REST only")

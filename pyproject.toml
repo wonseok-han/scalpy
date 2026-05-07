@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "한국투자증권 Open API 기반 자동 스캘핑 트레이딩 봇"
 requires-python = ">=3.12"
 dependencies = [
-    "pykis>=1.0.0",
+    "pykis>=0.7.0",
     "sqlalchemy>=2.0",
     "psycopg2-binary>=2.9",
     "dynaconf>=3.2",
@@ -51,6 +51,10 @@ strict = true
 warn_return_any = true
 warn_unused_configs = true
 mypy_path = "src"
+
+[[tool.mypy.overrides]]
+module = "pykis.*"
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
