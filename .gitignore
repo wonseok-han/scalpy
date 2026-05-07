@@ -37,12 +37,13 @@ htmlcov/
 # Database
 *.db
 *.sqlite3
+.data/
 
 # OS
 .DS_Store
 Thumbs.db
 
-# Streamlit
+# Streamlit (legacy)
 .streamlit/secrets.toml
 
 # Logs

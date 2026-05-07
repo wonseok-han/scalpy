@@ -19,6 +19,7 @@ class StockScreener:
         self._max_stocks = max_stocks
         self._min_change_rate = min_change_rate
         self._min_volume = min_volume
+        self.symbol_names: dict[str, str] = {}
 
     async def scan(self, held_symbols: list[str] | None = None) -> list[str]:
         held = set(held_symbols or [])
@@ -27,6 +28,10 @@ class StockScreener:
         if not stocks:
             logger.warning("screener.no_data")
             return list(held)
+
+        for s in stocks:
+            if s.get("name"):
+                self.symbol_names[s["symbol"]] = s["name"]
 
         filtered = self._filter(stocks)
         if not filtered:

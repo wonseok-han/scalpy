@@ -26,6 +26,10 @@ class BaseBroker(ABC):
     async def get_balance(self) -> Decimal: ...
 
     @abstractmethod
+    async def get_trade_history(self) -> list[dict[str, Any]]:
+        """당일 체결내역 조회."""
+
+    @abstractmethod
     async def get_top_volume_stocks(self, count: int = 30) -> list[dict[str, Any]]:
         """거래량 상위 종목 조회."""
 

@@ -8,6 +8,7 @@ from scalpy.broker.base import BaseBroker
 from scalpy.broker.mock import MockBroker
 from scalpy.config import settings
 from scalpy.data.stream import MarketDataStream
+from scalpy.events import EventBus
 from scalpy.strategy.bollinger import BollingerStrategy
 from scalpy.strategy.ma_cross import MACrossStrategy
 from scalpy.strategy.orderbook import OrderbookStrategy
@@ -99,25 +100,19 @@ async def _screening_loop(
             pass
 
 
-async def run() -> None:
-    registry = build_registry()
-    engine, broker = build_engine(registry)
-    mock = settings.get("mock", True)
-    stream = MarketDataStream(
-        app_key=settings.get("kis_app_key", ""),
-        app_secret=settings.get("kis_app_secret", ""),
-        mock=mock,
-    )
-
-    stream.on_tick(engine.on_tick)
-    stream.on_orderbook(engine.on_orderbook)
-
-    await engine.start()
+async def _start_trading(
+    engine: TradingEngine,
+    broker: BaseBroker,
+    stream: MarketDataStream,
+    bus: EventBus,
+    stop_event: asyncio.Event,
+) -> None:
+    engine._running = True
+    if bus:
+        await bus.emit("engine.started")
 
     screening_cfg = settings.get("screening", {})
     screening_enabled = screening_cfg.get("enabled", False)
-
-    stop_event = asyncio.Event()
 
     if screening_enabled:
         from scalpy.screening import StockScreener
@@ -137,16 +132,98 @@ async def run() -> None:
         interval = screening_cfg.get("interval_minutes", 30)
         asyncio.create_task(_screening_loop(screener, engine, stream, interval, stop_event))
         logger.info("scalpy.screening_enabled", interval_minutes=interval)
+        if bus:
+            await bus.emit("screening.completed", {"symbols": symbols})
     else:
         symbols = settings.get("trading.symbols", ["005930"])
         await stream.start(symbols)
 
+    logger.info("scalpy.trading_started", symbols=symbols)
+
+
+async def run() -> None:
+    registry = build_registry()
+    engine, broker = build_engine(registry)
+    mock = settings.get("mock", True)
+    stream = MarketDataStream(
+        app_key=settings.get("kis_app_key", ""),
+        app_secret=settings.get("kis_app_secret", ""),
+        mock=mock,
+    )
+
+    stream.on_tick(engine.on_tick)
+    stream.on_orderbook(engine.on_orderbook)
+
+    bus = EventBus()
+    engine.set_event_bus(bus)
+
+    await broker.connect()
+    await engine.sync_positions()
+    await engine.get_cached_balance()
+
+    stop_event = asyncio.Event()
+    dashboard_task = None
+
+    trading_cfg = settings.get("trading", {})
+    auto_start = trading_cfg.get("auto_start", True)
+
+    # Screening (build reference for dashboard regardless of auto_start)
+    screening_cfg = settings.get("screening", {})
+    screening_enabled = screening_cfg.get("enabled", False)
+    screener_ref = None
+    if screening_enabled:
+        from scalpy.screening import StockScreener
+
+        screener_ref = StockScreener(
+            broker=broker,
+            max_stocks=screening_cfg.get("max_stocks", 5),
+            min_change_rate=screening_cfg.get("min_change_rate", 2.0),
+            min_volume=screening_cfg.get("min_volume", 100_000),
+        )
+
+    # Dashboard
+    dashboard_cfg = settings.get("dashboard", {})
+    if dashboard_cfg.get("enabled", False):
+        from scalpy.dashboard.server import start_dashboard_server
+        from scalpy.dashboard.state import DashboardState
+
+        dash_state = DashboardState()
+        dash_state.register_handlers(bus)
+        synced_names = getattr(broker, "_position_names", {})
+        if synced_names:
+            dash_state.symbol_names.update(synced_names)
+        dashboard_task = start_dashboard_server(
+            dash_state, bus, engine,
+            host=dashboard_cfg.get("host", "0.0.0.0"),
+            port=dashboard_cfg.get("port", 8080),
+            screener=screener_ref, stream=stream,
+            registry=registry,
+        )
+
+    # Telegram
+    telegram_cfg = settings.get("telegram", {})
+    if telegram_cfg.get("enabled", False) and telegram_cfg.get("bot_token"):
+        from scalpy.notification import TelegramNotifier
+
+        notifier = TelegramNotifier(
+            bot_token=telegram_cfg["bot_token"],
+            chat_id=telegram_cfg.get("chat_id", ""),
+        )
+        notifier.register_handlers(bus)
+        logger.info("scalpy.telegram_enabled")
+
+    if auto_start:
+        await _start_trading(engine, broker, stream, bus, stop_event)
+    else:
+        logger.info("scalpy.waiting_for_manual_start")
+
     logger.info(
         "scalpy.started",
         mock=mock,
-        symbols=symbols,
+        auto_start=auto_start,
         strategies=[s.name for s in registry.all()],
         screening=screening_enabled,
+        dashboard=dashboard_cfg.get("enabled", False),
     )
 
     def _signal_handler() -> None:
@@ -161,6 +238,17 @@ async def run() -> None:
 
     await stream.stop()
     await engine.stop()
+
+    if dashboard_task is not None:
+        server = getattr(dashboard_task, '_uvicorn_server', None)
+        if server:
+            server.should_exit = True
+        dashboard_task.cancel()
+        try:
+            await dashboard_task
+        except asyncio.CancelledError:
+            pass
+
     logger.info("scalpy.stopped")
 
 

@@ -8,6 +8,7 @@ from scalpy.strategy.base import BaseStrategy
 
 class OrderbookStrategy(BaseStrategy):
     name = "orderbook"
+    display_name = "호가창 불균형"
     description = "Orderbook Imbalance — buy when bid volume dominates, sell when ask dominates"
 
     def __init__(self) -> None:

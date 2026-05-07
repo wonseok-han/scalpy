@@ -126,19 +126,41 @@ class MarketDataStream:
         asyncio.create_task(self._recv_loop())
 
     async def _recv_loop(self) -> None:
-        try:
-            async for raw in self._ws:
-                if not self._running:
-                    break
-                await self._handle_message(raw)
-        except websockets.ConnectionClosed:
-            logger.warning("market_data_stream.disconnected")
-        except Exception as e:
-            logger.error("market_data_stream.error", error=str(e))
-        finally:
-            self._running = False
+        reconnect_delay = 1
+        while self._running:
+            try:
+                async for raw in self._ws:
+                    if not self._running:
+                        return
+                    await self._handle_message(raw)
+                    reconnect_delay = 1
+            except websockets.ConnectionClosed:
+                logger.warning("market_data_stream.disconnected")
+            except Exception as e:
+                logger.error("market_data_stream.error", error=str(e))
+
+            if not self._running:
+                return
+
+            delay = min(reconnect_delay, 30)
+            logger.info("market_data_stream.reconnecting", delay=delay)
+            await asyncio.sleep(delay)
+            reconnect_delay = min(reconnect_delay * 2, 30)
+
+            try:
+                ws_url = _WS_URLS["virtual" if self._mock else "real"]
+                self._ws = await websockets.connect(ws_url, ping_interval=None)
+                for sym in self._subscribed:
+                    await self._ws.send(_subscribe_msg(self._approval_key, "H0STCNT0", sym))
+                    await self._ws.send(_subscribe_msg(self._approval_key, "H0STASP0", sym))
+                    await asyncio.sleep(0.05)
+                logger.info("market_data_stream.reconnected", symbols=len(self._subscribed))
+            except Exception as e:
+                logger.error("market_data_stream.reconnect_failed", error=str(e))
 
     async def _handle_message(self, raw: str) -> None:
+        if not self._running:
+            return
         if raw[0] in ("0", "1"):
             parts = raw.split("|")
             tr_id = parts[1]
@@ -215,7 +237,10 @@ class MarketDataStream:
     async def stop(self) -> None:
         self._running = False
         if self._ws:
-            await self._ws.close()
+            try:
+                await asyncio.wait_for(self._ws.close(), timeout=3)
+            except (asyncio.TimeoutError, Exception):
+                pass
             self._ws = None
         logger.info("market_data_stream.stopped")
 

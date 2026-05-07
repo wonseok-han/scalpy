@@ -1,0 +1,817 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Scalpy Dashboard</title>
+<link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
+<link href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css" rel="stylesheet">
+<style>
+:root {
+  --bg-base: #0B0E13;
+  --bg-surface: #13171E;
+  --bg-elevated: #1A1F2B;
+  --bg-hover: #222834;
+  --border: rgba(148,163,184,0.08);
+  --border-hover: rgba(148,163,184,0.15);
+  --text-primary: #E2E8F0;
+  --text-secondary: #94A3B8;
+  --text-tertiary: #64748B;
+  --accent: #3B82F6;
+  --accent-soft: rgba(59,130,246,0.12);
+  --profit: #22C55E;
+  --profit-soft: rgba(34,197,94,0.12);
+  --loss: #EF4444;
+  --loss-soft: rgba(239,68,68,0.12);
+  --warning: #F59E0B;
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --radius-xl: 20px;
+  --shadow-card: 0 1px 3px rgba(0,0,0,0.3), 0 1px 2px rgba(0,0,0,0.2);
+  --shadow-elevated: 0 4px 16px rgba(0,0,0,0.4);
+  --font: "Pretendard Variable", Pretendard, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+  font-family: var(--font);
+  background: var(--bg-base);
+  color: var(--text-primary);
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  overflow-x: hidden;
+}
+
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--text-tertiary); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--text-secondary); }
+
+.container {
+  max-width: 1440px;
+  margin: 0 auto;
+  padding: 0 24px 40px;
+}
+
+/* ── Header ── */
+.header {
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  background: rgba(11,14,19,0.82);
+  backdrop-filter: blur(20px) saturate(1.4);
+  -webkit-backdrop-filter: blur(20px) saturate(1.4);
+  border-bottom: 1px solid var(--border);
+  padding: 14px 24px;
+  margin-bottom: 24px;
+}
+.header-inner {
+  max-width: 1440px;
+  margin: 0 auto;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+}
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.brand-logo {
+  width: 36px;
+  height: 36px;
+  background: linear-gradient(135deg, #3B82F6, #8B5CF6);
+  border-radius: var(--radius-sm);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 800;
+  font-size: 0.85rem;
+  color: #fff;
+  letter-spacing: -0.5px;
+  flex-shrink: 0;
+}
+.brand-text h1 {
+  font-size: 1.1rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  letter-spacing: -0.3px;
+}
+.brand-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 1px;
+}
+.engine-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+.pulse-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.pulse-dot.on {
+  background: var(--profit);
+  box-shadow: 0 0 0 0 rgba(34,197,94,0.5);
+  animation: pulse 2s infinite;
+}
+.pulse-dot.off { background: var(--text-tertiary); }
+@keyframes pulse {
+  0% { box-shadow: 0 0 0 0 rgba(34,197,94,0.45); }
+  70% { box-shadow: 0 0 0 8px rgba(34,197,94,0); }
+  100% { box-shadow: 0 0 0 0 rgba(34,197,94,0); }
+}
+.conn-badge {
+  font-size: 0.65rem;
+  font-weight: 600;
+  padding: 2px 7px;
+  border-radius: 4px;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+}
+.conn-live { background: var(--profit-soft); color: var(--profit); }
+.conn-off { background: var(--loss-soft); color: var(--loss); }
+
+.actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.btn {
+  padding: 8px 16px;
+  border: 1px solid var(--border-hover);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-family: var(--font);
+  font-size: 0.8rem;
+  font-weight: 500;
+  transition: all 0.2s ease;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+.btn:hover { background: var(--bg-hover); color: var(--text-primary); transform: translateY(-1px); }
+.btn:active { transform: translateY(0); }
+.btn-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+  font-weight: 600;
+}
+.btn-primary:hover { background: #2563EB; border-color: #2563EB; }
+.btn-danger { border-color: rgba(239,68,68,0.3); color: var(--loss); }
+.btn-danger:hover { background: var(--loss-soft); border-color: var(--loss); }
+.btn:disabled { opacity: 0.3; cursor: not-allowed; pointer-events: none; }
+
+/* ── Metric Cards ── */
+.metrics-row {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 16px;
+  margin-bottom: 20px;
+  animation: slideUp 0.5s ease both;
+}
+.metric-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 20px;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+.metric-card:hover {
+  border-color: var(--border-hover);
+  box-shadow: var(--shadow-card);
+}
+.metric-label {
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  margin-bottom: 8px;
+}
+.metric-value {
+  font-size: 1.5rem;
+  font-weight: 700;
+  letter-spacing: -0.5px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.2;
+}
+.metric-sub {
+  font-size: 0.75rem;
+  color: var(--text-tertiary);
+  margin-top: 4px;
+  font-weight: 400;
+}
+
+/* ── Status Row ── */
+.status-row {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 16px;
+  margin-bottom: 20px;
+  animation: slideUp 0.55s ease both;
+}
+.status-chip {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 14px 18px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  transition: border-color 0.2s;
+}
+.status-chip:hover { border-color: var(--border-hover); }
+.status-chip .s-label { font-size: 0.8rem; color: var(--text-tertiary); font-weight: 400; }
+.status-chip .s-value { font-size: 0.85rem; font-weight: 600; font-variant-numeric: tabular-nums; }
+
+/* ── Cards ── */
+.grid-2 {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 20px;
+  margin-bottom: 20px;
+}
+.grid-full { margin-bottom: 20px; }
+
+.card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+.card:hover {
+  border-color: var(--border-hover);
+  box-shadow: var(--shadow-card);
+}
+.card-header {
+  padding: 18px 22px 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--border);
+}
+.card-title {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  letter-spacing: -0.2px;
+}
+.card-badge {
+  font-size: 0.7rem;
+  font-weight: 500;
+  padding: 3px 8px;
+  border-radius: 6px;
+  background: var(--bg-hover);
+  color: var(--text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+.card-body { padding: 0; }
+.card-body-padded { padding: 18px 22px; }
+
+/* ── Tables ── */
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.82rem;
+  font-variant-numeric: tabular-nums;
+}
+thead th {
+  text-align: left;
+  color: var(--text-tertiary);
+  font-weight: 500;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 10px 16px;
+  background: var(--bg-elevated);
+  border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+thead th:first-child { padding-left: 22px; }
+thead th:last-child { padding-right: 22px; }
+tbody td {
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-primary);
+  vertical-align: middle;
+}
+tbody td:first-child { padding-left: 22px; }
+tbody td:last-child { padding-right: 22px; }
+tbody tr { transition: background 0.15s; }
+tbody tr:hover { background: rgba(148,163,184,0.03); }
+tbody tr:last-child td { border-bottom: none; }
+
+.text-right { text-align: right; }
+.text-center { text-align: center; }
+.text-mono { font-variant-numeric: tabular-nums; }
+.text-sub { display: block; font-size: 0.7rem; color: var(--text-tertiary); margin-top: 1px; }
+.text-profit { color: var(--profit); }
+.text-loss { color: var(--loss); }
+
+.pnl-chip {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 5px;
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+.pnl-chip.up { background: var(--profit-soft); color: var(--profit); }
+.pnl-chip.down { background: var(--loss-soft); color: var(--loss); }
+.pnl-chip.neutral { background: var(--bg-hover); color: var(--text-secondary); }
+
+.side-tag {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 5px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+}
+.side-tag.buy { background: var(--profit-soft); color: var(--profit); }
+.side-tag.sell { background: var(--loss-soft); color: var(--loss); }
+
+.empty-row {
+  text-align: center;
+  padding: 32px 16px !important;
+  color: var(--text-tertiary) !important;
+  font-size: 0.82rem;
+}
+
+/* ── Screening Chips ── */
+.screening-wrap {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 18px 22px;
+}
+.screen-chip {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 6px 14px;
+  font-size: 0.8rem;
+  font-weight: 500;
+  color: var(--text-primary);
+  transition: all 0.2s;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.screen-chip:hover { border-color: var(--accent); background: var(--accent-soft); }
+.screen-chip .code { font-size: 0.7rem; color: var(--text-tertiary); font-weight: 400; }
+.screen-empty { padding: 24px 22px; color: var(--text-tertiary); font-size: 0.82rem; }
+.strat-chip {
+  background: var(--accent-soft);
+  border: 1px solid rgba(59,130,246,0.2);
+  border-radius: var(--radius-sm);
+  padding: 8px 16px;
+  font-size: 0.82rem;
+  font-weight: 500;
+  color: var(--text-primary);
+  display: inline-flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.strat-chip .strat-name { font-weight: 600; }
+.strat-chip .strat-key { font-size: 0.7rem; color: var(--text-tertiary); font-weight: 400; }
+
+.scroll-area { max-height: 340px; overflow-y: auto; }
+
+/* ── Toast ── */
+.toast {
+  position: fixed;
+  bottom: 28px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 12px 28px;
+  border-radius: var(--radius-sm);
+  font-family: var(--font);
+  font-size: 0.82rem;
+  font-weight: 500;
+  color: #fff;
+  z-index: 9999;
+  backdrop-filter: blur(12px);
+  animation: toastIn 0.35s cubic-bezier(0.16,1,0.3,1);
+  box-shadow: var(--shadow-elevated);
+}
+.toast-success { background: rgba(34,197,94,0.92); }
+.toast-error { background: rgba(239,68,68,0.92); }
+@keyframes toastIn {
+  from { opacity: 0; transform: translateX(-50%) translateY(12px) scale(0.95); }
+  to { opacity: 1; transform: translateX(-50%) translateY(0) scale(1); }
+}
+
+/* ── Entrance Animations ── */
+@keyframes slideUp {
+  from { opacity: 0; transform: translateY(16px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes fadeRow {
+  from { opacity: 0; transform: translateY(-6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.anim-1 { animation: slideUp 0.5s ease both; animation-delay: 0.05s; }
+.anim-2 { animation: slideUp 0.5s ease both; animation-delay: 0.1s; }
+.anim-3 { animation: slideUp 0.5s ease both; animation-delay: 0.15s; }
+.anim-4 { animation: slideUp 0.5s ease both; animation-delay: 0.2s; }
+.new-row { animation: fadeRow 0.3s ease both; }
+
+/* ── Responsive ── */
+@media (max-width: 1200px) {
+  .metrics-row { grid-template-columns: repeat(3, 1fr); }
+  .status-row { grid-template-columns: repeat(2, 1fr); }
+}
+@media (max-width: 768px) {
+  .header-inner { flex-direction: column; align-items: flex-start; }
+  .metrics-row { grid-template-columns: repeat(2, 1fr); }
+  .status-row { grid-template-columns: 1fr; }
+  .grid-2 { grid-template-columns: 1fr; }
+  .metric-value { font-size: 1.2rem; }
+}
+</style>
+</head>
+<body>
+
+<!-- Header -->
+<div class="header">
+  <div class="header-inner">
+    <div class="brand">
+      <div class="brand-logo">S</div>
+      <div class="brand-text">
+        <h1>Scalpy</h1>
+        <div class="brand-meta">
+          <span id="engine-status" class="engine-badge"><span class="pulse-dot off"></span> 대기</span>
+          <span id="conn-badge" class="conn-badge conn-off">CONNECTING</span>
+        </div>
+      </div>
+    </div>
+    <div class="actions">
+      <button id="btn-start" class="btn btn-primary" onclick="action('start')">스캘핑 시작</button>
+      <button id="btn-stop" class="btn" onclick="action('stop')" disabled>정지</button>
+      <button id="btn-rescan" class="btn" onclick="action('rescan')">스크리닝</button>
+      <button id="btn-liquidate" class="btn btn-danger" onclick="if(confirm('전체 청산하시겠습니까?'))action('liquidate')">전체청산</button>
+    </div>
+  </div>
+</div>
+
+<div class="container">
+
+  <!-- Metric Cards -->
+  <div class="metrics-row">
+    <div class="metric-card">
+      <div class="metric-label">총 평가금액</div>
+      <div class="metric-value" id="balance">-</div>
+      <div class="metric-sub" id="mode">-</div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-label">당일 손익</div>
+      <div class="metric-value" id="daily-pnl">-</div>
+      <div class="metric-sub">Today's P&L</div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-label">보유 포지션</div>
+      <div class="metric-value" id="pos-count">0</div>
+      <div class="metric-sub">Active Positions</div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-label">스크리닝</div>
+      <div class="metric-value" id="screening-count">0</div>
+      <div class="metric-sub">Watched Symbols</div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-label">마지막 틱</div>
+      <div class="metric-value" id="last-tick" style="font-size:1.1rem">-</div>
+      <div class="metric-sub">Last Tick</div>
+    </div>
+  </div>
+
+  <!-- Status Row -->
+  <div class="status-row anim-1">
+    <div class="status-chip">
+      <span class="s-label">엔진</span>
+      <span class="s-value" id="engine-running">대기</span>
+    </div>
+    <div class="status-chip">
+      <span class="s-label">전략</span>
+      <span class="s-value" id="strategy-count">0개</span>
+    </div>
+    <div class="status-chip">
+      <span class="s-label">모드</span>
+      <span class="s-value" id="mode-chip">-</span>
+    </div>
+    <div class="status-chip">
+      <span class="s-label">종목 수</span>
+      <span class="s-value" id="screening-count-chip">0</span>
+    </div>
+  </div>
+
+  <!-- Strategies -->
+  <div class="grid-full anim-2">
+    <div class="card">
+      <div class="card-header">
+        <span class="card-title">활성 전략</span>
+        <span class="card-badge" id="strat-badge">0개</span>
+      </div>
+      <div class="card-body">
+        <div id="strategy-list" class="screening-wrap">
+          <span class="screen-empty">-</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Positions -->
+  <div class="grid-full anim-2">
+    <div class="card">
+      <div class="card-header">
+        <span class="card-title">보유 포지션</span>
+        <span class="card-badge" id="pos-badge">0건</span>
+      </div>
+      <div class="card-body">
+        <table>
+          <thead>
+            <tr>
+              <th>종목</th>
+              <th class="text-right">수량</th>
+              <th class="text-right">평균단가</th>
+              <th class="text-right">현재가</th>
+              <th class="text-right">손익</th>
+              <th class="text-right">수익률</th>
+              <th>전략</th>
+              <th class="text-center"></th>
+            </tr>
+          </thead>
+          <tbody id="positions"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- Trades + Signals -->
+  <div class="grid-2 anim-3">
+    <div class="card">
+      <div class="card-header">
+        <span class="card-title">당일 거래내역</span>
+        <span class="card-badge" id="trade-badge">0건</span>
+      </div>
+      <div class="card-body">
+        <div class="scroll-area">
+          <table>
+            <thead>
+              <tr>
+                <th>시간</th>
+                <th>방향</th>
+                <th>종목</th>
+                <th class="text-right">수량</th>
+                <th class="text-right">체결가</th>
+                <th>전략</th>
+                <th class="text-right">손익</th>
+              </tr>
+            </thead>
+            <tbody id="trades"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header">
+        <span class="card-title">전략 신호 로그</span>
+        <span class="card-badge" id="signal-badge">0건</span>
+      </div>
+      <div class="card-body">
+        <div class="scroll-area">
+          <table>
+            <thead>
+              <tr>
+                <th>시간</th>
+                <th>방향</th>
+                <th>종목</th>
+                <th>전략</th>
+                <th class="text-right">가격</th>
+              </tr>
+            </thead>
+            <tbody id="signals"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Screening -->
+  <div class="grid-full anim-4">
+    <div class="card">
+      <div class="card-header">
+        <span class="card-title">스크리닝 종목</span>
+      </div>
+      <div class="card-body">
+        <div id="screening-symbols" class="screening-wrap">
+          <span class="screen-empty">대기 중</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+function fmt(n){return Number(n).toLocaleString('ko-KR')}
+function pnlSign(v){const n=Number(v);return n>0?'+'+fmt(n):n<0?fmt(n):'0'}
+function pnlType(v){const n=Number(v);return n>0?'up':n<0?'down':'neutral'}
+let _names={};
+let _strats={};
+function stratLabel(key){return _strats[key]||key}
+
+function applyState(d){
+  updateStatus(d.status);
+  updatePositions(d.positions);
+  updateTrades(d.trades||[]);
+  updateScreening(d.screening);
+  updateSignals(d.signals);
+}
+
+async function loadInitial(){
+  try{
+    const d=await fetch('/api/dashboard').then(r=>r.json());
+    applyState(d);
+  }catch(e){console.error('initial load failed',e)}
+}
+
+function updateStatus(s){
+  const bal=s.balance;
+  const balEl=document.getElementById('balance');
+  balEl.textContent=bal==='-'?'--':fmt(bal)+'원';
+
+  const pnl=Number(s.daily_pnl);
+  const pnlEl=document.getElementById('daily-pnl');
+  pnlEl.textContent=pnlSign(pnl)+'원';
+  pnlEl.className='metric-value '+(pnl>=0?'text-profit':'text-loss');
+
+  document.getElementById('pos-count').textContent=s.position_count;
+  document.getElementById('screening-count').textContent=s.screening_count;
+  document.getElementById('last-tick').textContent=s.last_tick_at||'--';
+
+  const engineEl=document.getElementById('engine-running');
+  engineEl.textContent=s.running?'실행 중':'대기';
+  engineEl.style.color=s.running?'var(--profit)':'var(--text-secondary)';
+
+  document.getElementById('mode').textContent=s.mock?'모의투자':'실거래';
+  document.getElementById('mode-chip').textContent=s.mock?'모의투자':'실거래';
+  if(s.strategies&&typeof s.strategies==='object'){Object.assign(_strats,s.strategies)}
+  const stratEntries=Object.entries(_strats);
+  document.getElementById('strategy-count').textContent=stratEntries.length+'개';
+  document.getElementById('strat-badge').textContent=stratEntries.length+'개';
+  const stratEl=document.getElementById('strategy-list');
+  if(stratEntries.length){
+    stratEl.innerHTML=stratEntries.map(([key,name])=>
+      `<span class="strat-chip"><span class="strat-name">${name}</span><span class="strat-key">${key}</span></span>`
+    ).join('');
+  } else {
+    stratEl.innerHTML='<span class="screen-empty">-</span>';
+  }
+  document.getElementById('screening-count-chip').textContent=s.screening_count+'개';
+
+  const statusEl=document.getElementById('engine-status');
+  statusEl.innerHTML=s.running
+    ?'<span class="pulse-dot on"></span> 스캘핑 중'
+    :'<span class="pulse-dot off"></span> 대기';
+
+  document.getElementById('btn-start').disabled=s.running;
+  document.getElementById('btn-stop').disabled=!s.running;
+}
+
+function updatePositions(list){
+  const tb=document.getElementById('positions');
+  document.getElementById('pos-badge').textContent=list.length+'건';
+  if(!list.length){
+    tb.innerHTML='<tr><td class="empty-row" colspan="8">보유 포지션 없음</td></tr>';
+    return;
+  }
+  tb.innerHTML=list.map(p=>{
+    const pnl=Number(p.pnl);
+    const cls=pnlType(pnl);
+    return `<tr>
+      <td><strong>${p.name||p.symbol}</strong><span class="text-sub">${p.symbol}</span></td>
+      <td class="text-right">${p.quantity}</td>
+      <td class="text-right">${fmt(p.avg_price)}</td>
+      <td class="text-right">${fmt(p.current_price)}</td>
+      <td class="text-right"><span class="pnl-chip ${cls}">${pnlSign(pnl)}</span></td>
+      <td class="text-right"><span class="pnl-chip ${cls}">${p.pnl_pct>=0?'+':''}${p.pnl_pct}%</span></td>
+      <td>${stratLabel(p.strategy)}</td>
+      <td class="text-center"><button class="btn btn-danger" style="padding:4px 10px;font-size:0.72rem" onclick="liquidateOne('${p.symbol}')">청산</button></td>
+    </tr>`;
+  }).join('');
+}
+
+function updateTrades(list){
+  const tb=document.getElementById('trades');
+  document.getElementById('trade-badge').textContent=list.length+'건';
+  if(!list.length){
+    tb.innerHTML='<tr><td class="empty-row" colspan="7">거래 없음</td></tr>';
+    return;
+  }
+  tb.innerHTML=list.slice(0,100).map(t=>{
+    const pnl=t.pnl?Number(t.pnl):0;
+    return `<tr class="new-row">
+      <td>${t.time}</td>
+      <td><span class="side-tag ${t.side==='buy'?'buy':'sell'}">${t.side==='buy'?'BUY':'SELL'}</span></td>
+      <td>${_names[t.symbol]||t.symbol}<span class="text-sub">${t.symbol}</span></td>
+      <td class="text-right">${t.quantity}</td>
+      <td class="text-right">${fmt(t.price)}</td>
+      <td>${stratLabel(t.strategy)}</td>
+      <td class="text-right">${t.pnl?`<span class="pnl-chip ${pnlType(pnl)}">${pnlSign(pnl)}</span>`:'-'}</td>
+    </tr>`;
+  }).join('');
+}
+
+function updateScreening(s){
+  const el=document.getElementById('screening-symbols');
+  const names=s.names||{};
+  Object.assign(_names,names);
+  const syms=s.symbols||[];
+  if(!syms.length){
+    el.innerHTML='<span class="screen-empty">대기 중</span>';
+    return;
+  }
+  el.innerHTML=syms.map(sym=>
+    `<span class="screen-chip">${names[sym]||sym} <span class="code">${sym}</span></span>`
+  ).join('');
+}
+
+function updateSignals(list){
+  const tb=document.getElementById('signals');
+  document.getElementById('signal-badge').textContent=list.length+'건';
+  if(!list.length){
+    tb.innerHTML='<tr><td class="empty-row" colspan="5">신호 없음</td></tr>';
+    return;
+  }
+  tb.innerHTML=list.slice(0,50).map(s=>
+    `<tr class="new-row">
+      <td>${s.time}</td>
+      <td><span class="side-tag ${s.side==='buy'?'buy':'sell'}">${s.side==='buy'?'BUY':'SELL'}</span></td>
+      <td>${_names[s.symbol]||s.symbol}</td>
+      <td>${stratLabel(s.strategy)}</td>
+      <td class="text-right">${fmt(s.price)}</td>
+    </tr>`
+  ).join('');
+}
+
+async function liquidateOne(symbol){
+  const name=_names[symbol]||symbol;
+  if(!confirm(name+' ('+symbol+') 청산하시겠습니까?')) return;
+  try{
+    const r=await fetch('/api/actions/liquidate/'+symbol,{method:'POST'});
+    const d=await r.json();
+    if(d.success){toast(name+' 청산 완료','success')}
+    else toast('청산 실패: '+(d.error||'unknown'),'error');
+  }catch(e){toast('오류: '+e.message,'error')}
+}
+
+const _actionLabels={start:'스캘핑 시작',stop:'스캘핑 정지',rescan:'스크리닝 완료',liquidate:'전체 청산 완료'};
+function toast(msg,type){
+  const el=document.createElement('div');
+  el.className='toast toast-'+type;
+  el.textContent=msg;
+  document.body.appendChild(el);
+  setTimeout(()=>el.remove(),3000);
+}
+async function action(name){
+  try{
+    const r=await fetch('/api/actions/'+name,{method:'POST'});
+    const text=await r.text();
+    let d;
+    try{d=JSON.parse(text)}catch{toast('응답 파싱 실패 ('+r.status+')','error');return}
+    if(d.success){toast(_actionLabels[name]||'성공','success')}
+    else toast('실패: '+(d.error||'unknown'),'error');
+  }catch(e){toast('오류: '+e.message,'error')}
+}
+
+const badge=document.getElementById('conn-badge');
+const es=new EventSource('/api/events');
+es.addEventListener('state',e=>{
+  try{applyState(JSON.parse(e.data))}catch(err){console.error('state parse error',err)}
+});
+es.onopen=()=>{badge.textContent='LIVE';badge.className='conn-badge conn-live'};
+es.onerror=()=>{
+  badge.textContent='OFFLINE';badge.className='conn-badge conn-off';
+  document.getElementById('engine-status').innerHTML='<span class="pulse-dot off"></span> 연결 끊김';
+};
+
+loadInitial();
+</script>
+</body>
+</html>

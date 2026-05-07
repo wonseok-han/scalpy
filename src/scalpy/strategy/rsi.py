@@ -9,6 +9,7 @@ from scalpy.strategy.base import BaseStrategy
 
 class RSIStrategy(BaseStrategy):
     name = "rsi"
+    display_name = "RSI 과매수/과매도"
     description = "RSI Overbought/Oversold — buy below 30, sell above 70"
 
     def __init__(self) -> None:
