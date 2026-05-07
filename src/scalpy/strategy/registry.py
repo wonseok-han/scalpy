@@ -29,6 +29,8 @@ class StrategyRegistry:
         if s is None:
             return None
         s.enabled = not s.enabled
+        if s.enabled:
+            s.reset()
         logger.info("strategy.toggled", name=name, enabled=s.enabled)
         return s.enabled
 

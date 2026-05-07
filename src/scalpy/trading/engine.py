@@ -179,6 +179,8 @@ class TradingEngine:
             return
         if result.status == OrderStatus.FILLED:
             self._positions.update_on_fill(result)
+            self._cached_balance = await self._broker.get_balance()
+            self._balance_fetched_at = time.monotonic()
             if self._bus:
                 await self._bus.emit("order.filled", {
                     "symbol": result.symbol, "side": result.side.value,
@@ -237,6 +239,8 @@ class TradingEngine:
         if result.status == OrderStatus.FILLED:
             pnl = (result.price - pos.avg_price) * pos.quantity
             self._positions.update_on_fill(result)
+            self._cached_balance = await self._broker.get_balance()
+            self._balance_fetched_at = time.monotonic()
             logger.info("engine.position_force_closed", symbol=pos.symbol, reason=reason)
             if self._bus:
                 await self._bus.emit("signal.generated", {

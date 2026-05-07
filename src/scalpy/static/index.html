@@ -216,7 +216,7 @@ body {
 /* ── Status Row ── */
 .status-row {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(3, 1fr);
   gap: 16px;
   margin-bottom: 20px;
   animation: slideUp 0.55s ease both;
@@ -589,10 +589,6 @@ tbody tr:last-child td { border-bottom: none; }
       <span class="s-label">모드</span>
       <span class="s-value" id="mode-chip">-</span>
     </div>
-    <div class="status-chip">
-      <span class="s-label">종목 수</span>
-      <span class="s-value" id="screening-count-chip">0</span>
-    </div>
   </div>
 
   <!-- Strategies -->
@@ -637,8 +633,8 @@ tbody tr:last-child td { border-bottom: none; }
     </div>
   </div>
 
-  <!-- Trades + Signals -->
-  <div class="grid-2 anim-3">
+  <!-- Trades -->
+  <div class="grid-full anim-3">
     <div class="card">
       <div class="card-header">
         <span class="card-title">당일 거래내역</span>
@@ -664,28 +660,6 @@ tbody tr:last-child td { border-bottom: none; }
       </div>
     </div>
 
-    <div class="card">
-      <div class="card-header">
-        <span class="card-title">전략 신호 로그</span>
-        <span class="card-badge" id="signal-badge">0건</span>
-      </div>
-      <div class="card-body">
-        <div class="scroll-area">
-          <table>
-            <thead>
-              <tr>
-                <th>시간</th>
-                <th>방향</th>
-                <th>종목</th>
-                <th>전략</th>
-                <th class="text-right">가격</th>
-              </tr>
-            </thead>
-            <tbody id="signals"></tbody>
-          </table>
-        </div>
-      </div>
-    </div>
   </div>
 
   <!-- Screening -->
@@ -827,7 +801,6 @@ function applyState(d){
   updatePositions(d.positions);
   updateTrades(d.trades||[]);
   updateScreening(d.screening);
-  updateSignals(d.signals);
 }
 
 async function loadInitial(){
@@ -860,8 +833,6 @@ function updateStatus(s){
   if(s.strategies&&typeof s.strategies==='object'){Object.assign(_strats,s.strategies)}
   if(s.strategy_enabled&&typeof s.strategy_enabled==='object'){Object.assign(_stratEnabled,s.strategy_enabled)}
   renderStrategies();
-  document.getElementById('screening-count-chip').textContent=s.screening_count+'개';
-
   const statusEl=document.getElementById('engine-status');
   statusEl.innerHTML=s.running
     ?'<span class="pulse-dot on"></span> 스캘핑 중'
@@ -935,32 +906,6 @@ function updateScreening(s){
   el.innerHTML=syms.map(sym=>
     `<span class="screen-chip">${names[sym]||sym} <span class="code">${sym}</span></span>`
   ).join('');
-}
-
-let _lastSignalCount=0;
-function updateSignals(list){
-  const tb=document.getElementById('signals');
-  document.getElementById('signal-badge').textContent=list.length+'건';
-  if(!list.length){
-    tb.innerHTML='<tr><td class="empty-row" colspan="5">신호 없음</td></tr>';
-    _lastSignalCount=0;
-    return;
-  }
-  const newCount=list.length-_lastSignalCount;
-  if(newCount<=0 && _lastSignalCount>0) return;
-  const items=list.slice(0,50);
-  const rows=items.map((s,i)=>{
-    const cls=i<newCount&&_lastSignalCount>0?'new-row':'';
-    return `<tr class="${cls}">
-      <td>${s.time}</td>
-      <td><span class="side-tag ${s.side==='buy'?'buy':'sell'}">${s.side==='buy'?'BUY':'SELL'}</span></td>
-      <td>${_names[s.symbol]||s.symbol}</td>
-      <td>${stratLabel(s.strategy)}</td>
-      <td class="text-right">${fmt(s.price)}</td>
-    </tr>`;
-  });
-  tb.innerHTML=rows.join('');
-  _lastSignalCount=list.length;
 }
 
 async function liquidateOne(symbol){

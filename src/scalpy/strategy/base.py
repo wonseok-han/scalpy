@@ -21,6 +21,9 @@ class BaseStrategy(ABC):
         self.cooldown_seconds: int = _DEFAULT_COOLDOWN
         self._last_signal_at: dict[str, float] = {}
 
+    def reset(self) -> None:
+        self._last_signal_at.clear()
+
     def _check_cooldown(self, symbol: str, side: str) -> bool:
         key = f"{symbol}:{side}"
         now = time.monotonic()

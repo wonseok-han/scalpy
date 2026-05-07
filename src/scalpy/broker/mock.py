@@ -13,15 +13,20 @@ from scalpy.core.models import Order, Position
 logger = structlog.get_logger()
 
 
+_COMMISSION_RATE = Decimal("0.00015")
+_SELL_TAX_RATE = Decimal("0.0018")
+
+
 class MockBroker(BaseBroker):
     """Mock broker for testing and paper trading."""
 
-    def __init__(self, initial_balance: Decimal = Decimal("10000000")) -> None:
+    def __init__(self, initial_balance: Decimal = Decimal("500000")) -> None:
         self._balance = initial_balance
         self._initial_balance = initial_balance
         self._positions: dict[str, Position] = {}
         self._connected = False
         self._daily_pnl = Decimal("0")
+        self._total_fees = Decimal("0")
 
     async def connect(self) -> None:
         self._connected = True
@@ -39,8 +44,10 @@ class MockBroker(BaseBroker):
             return order
 
         order.status = OrderStatus.FILLED
+        commission = int(cost * _COMMISSION_RATE)
         if order.side == Side.BUY:
-            self._balance -= cost
+            self._balance -= cost + commission
+            self._total_fees += commission
             self._positions[order.symbol] = Position(
                 symbol=order.symbol,
                 side=Side.BUY,
@@ -50,11 +57,14 @@ class MockBroker(BaseBroker):
                 strategy=order.strategy,
             )
         else:
+            tax = int(cost * _SELL_TAX_RATE)
+            fees = commission + tax
+            self._total_fees += fees
             pos = self._positions.get(order.symbol)
             if pos:
-                realized = (order.price - pos.avg_price) * order.quantity
+                realized = (order.price - pos.avg_price) * order.quantity - fees
                 self._daily_pnl += realized
-            self._balance += cost
+            self._balance += cost - fees
             self._positions.pop(order.symbol, None)
 
         logger.info(

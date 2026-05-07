@@ -19,6 +19,10 @@ class BollingerStrategy(BaseStrategy):
         self.num_std: float = 2.0
         self._prices: dict[str, deque[Decimal]] = {}
 
+    def reset(self) -> None:
+        super().reset()
+        self._prices.clear()
+
     def _get_prices(self, symbol: str) -> deque[Decimal]:
         if symbol not in self._prices:
             self._prices[symbol] = deque(maxlen=self.window)

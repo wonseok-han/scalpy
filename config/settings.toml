@@ -32,9 +32,9 @@ max_position_size = 100
 # 동시 보유 최대 포지션 수 (초과 시 신규 매수 차단)
 max_open_positions = 3
 # 손절 비율 (0.02 = 2%, 평균단가 대비 하락 시 자동 청산)
-stop_loss_ratio = 0.02
-# 익절 비율 (0.03 = 3%, 평균단가 대비 상승 시 자동 청산)
-take_profit_ratio = 0.03
+stop_loss_ratio = 0.005
+# 익절 비율 (0.01 = 1%, 평균단가 대비 상승 시 자동 청산)
+take_profit_ratio = 0.01
 
 [default.screening]
 # 자동 종목 스크리닝 활성화 (false: settings.toml의 symbols 사용)

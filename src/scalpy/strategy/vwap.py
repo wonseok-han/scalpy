@@ -17,6 +17,11 @@ class VWAPStrategy(BaseStrategy):
         self._cumulative_volume: dict[str, int] = {}
         self._cumulative_pv: dict[str, Decimal] = {}
 
+    def reset(self) -> None:
+        super().reset()
+        self._cumulative_volume.clear()
+        self._cumulative_pv.clear()
+
     def _update_vwap(self, symbol: str, price: Decimal, volume: int) -> Decimal | None:
         if volume <= 0:
             return None

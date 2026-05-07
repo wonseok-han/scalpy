@@ -85,10 +85,12 @@ def _build_realtime_state() -> dict[str, Any]:
                 "strategy": p.strategy,
             })
 
-    cached_balance = str(_engine_ref._cached_balance) if _engine_ref and _engine_ref._cached_balance else "-"
+    cash_balance = _engine_ref._cached_balance if _engine_ref and _engine_ref._cached_balance else Decimal("0")
+    position_value = sum(p.current_price * p.quantity for p in _engine_ref.positions.all()) if _engine_ref else Decimal("0")
+    total_balance = cash_balance + position_value
     status: dict[str, Any] = {
         "running": _engine_ref._running if _engine_ref else False,
-        "balance": cached_balance,
+        "balance": str(total_balance) if _engine_ref else "-",
         "daily_pnl": str(getattr(_engine_ref._broker, '_daily_pnl', 0)) if _engine_ref else "0",
         "last_tick_at": _state.last_tick_at if _state else "",
         "position_count": len(positions),
