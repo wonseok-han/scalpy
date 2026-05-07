@@ -4,9 +4,9 @@ from typing import Any
 
 import structlog
 
+from scalpy.broker.base import BaseBroker
 from scalpy.core.enums import OrderStatus, Side
 from scalpy.core.models import Order, Position
-from scalpy.broker.base import BaseBroker
 
 logger = structlog.get_logger()
 

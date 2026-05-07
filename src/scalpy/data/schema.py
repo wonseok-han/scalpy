@@ -16,10 +16,10 @@ class TradeRow(Base):
     )
     symbol: Mapped[str] = mapped_column(sa.String(20))
     side: Mapped[str] = mapped_column(sa.String(4))
-    price: Mapped[sa.Numeric] = mapped_column(sa.Numeric(15, 2))
+    price: Mapped[float] = mapped_column(sa.Numeric(15, 2))
     quantity: Mapped[int]
     strategy: Mapped[str] = mapped_column(sa.String(50))
-    pnl: Mapped[sa.Numeric | None] = mapped_column(sa.Numeric(15, 2), nullable=True)
+    pnl: Mapped[float | None] = mapped_column(sa.Numeric(15, 2), nullable=True)
     executed_at: Mapped[sa.DateTime] = mapped_column(sa.DateTime(timezone=True))
     created_at: Mapped[sa.DateTime] = mapped_column(
         sa.DateTime(timezone=True), server_default=sa.func.now()
@@ -35,13 +35,13 @@ class PositionRow(Base):
     symbol: Mapped[str] = mapped_column(sa.String(20))
     side: Mapped[str] = mapped_column(sa.String(4))
     quantity: Mapped[int]
-    avg_price: Mapped[sa.Numeric] = mapped_column(sa.Numeric(15, 2))
+    avg_price: Mapped[float] = mapped_column(sa.Numeric(15, 2))
     strategy: Mapped[str] = mapped_column(sa.String(50))
     opened_at: Mapped[sa.DateTime] = mapped_column(sa.DateTime(timezone=True))
     closed_at: Mapped[sa.DateTime | None] = mapped_column(
         sa.DateTime(timezone=True), nullable=True
     )
-    realized_pnl: Mapped[sa.Numeric] = mapped_column(
+    realized_pnl: Mapped[float] = mapped_column(
         sa.Numeric(15, 2), default=0
     )
     created_at: Mapped[sa.DateTime] = mapped_column(
@@ -63,9 +63,9 @@ class StrategyResultRow(Base):
     total_trades: Mapped[int] = mapped_column(default=0)
     win_count: Mapped[int] = mapped_column(default=0)
     loss_count: Mapped[int] = mapped_column(default=0)
-    total_pnl: Mapped[sa.Numeric] = mapped_column(sa.Numeric(15, 2), default=0)
-    max_drawdown: Mapped[sa.Numeric] = mapped_column(sa.Numeric(15, 2), default=0)
-    win_rate: Mapped[sa.Numeric] = mapped_column(sa.Numeric(5, 2), default=0)
+    total_pnl: Mapped[float] = mapped_column(sa.Numeric(15, 2), default=0)
+    max_drawdown: Mapped[float] = mapped_column(sa.Numeric(15, 2), default=0)
+    win_rate: Mapped[float] = mapped_column(sa.Numeric(5, 2), default=0)
     date: Mapped[sa.Date] = mapped_column(sa.Date)
     created_at: Mapped[sa.DateTime] = mapped_column(
         sa.DateTime(timezone=True), server_default=sa.func.now()

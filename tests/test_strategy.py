@@ -1,7 +1,5 @@
 from decimal import Decimal
 
-import pytest
-
 from scalpy.core.enums import Side
 from scalpy.strategy.bollinger import BollingerStrategy
 from scalpy.strategy.ma_cross import MACrossStrategy
@@ -68,14 +66,14 @@ class TestBollinger:
 
     async def test_lower_band_buy(self) -> None:
         # Fill window with stable prices, then drop below lower band
-        for i in range(20):
+        for _ in range(20):
             await self.strategy.on_tick("005930", Decimal("100"), 100)
         sig = await self.strategy.on_tick("005930", Decimal("90"), 100)
         assert sig is not None
         assert sig.side == Side.BUY
 
     async def test_upper_band_sell(self) -> None:
-        for i in range(20):
+        for _ in range(20):
             await self.strategy.on_tick("005930", Decimal("100"), 100)
         sig = await self.strategy.on_tick("005930", Decimal("110"), 100)
         assert sig is not None

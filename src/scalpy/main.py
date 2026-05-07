@@ -4,6 +4,7 @@ import signal
 
 import structlog
 
+from scalpy.broker.base import BaseBroker
 from scalpy.broker.mock import MockBroker
 from scalpy.config import settings
 from scalpy.data.stream import MarketDataStream
@@ -44,8 +45,22 @@ def build_registry() -> StrategyRegistry:
     return registry
 
 
+def build_broker() -> BaseBroker:
+    if settings.get("mock", True):
+        return MockBroker()
+
+    from scalpy.broker.kis import KISBroker
+
+    return KISBroker(
+        app_key=settings.get("kis_app_key", ""),
+        app_secret=settings.get("kis_app_secret", ""),
+        account_no=settings.get("kis_account_no", ""),
+        mock=False,
+    )
+
+
 def build_engine(registry: StrategyRegistry) -> TradingEngine:
-    broker = MockBroker()
+    broker = build_broker()
     trading = settings.get("trading", {})
     risk = RiskManager(
         stop_loss_ratio=trading.get("stop_loss_ratio", 0.02),
