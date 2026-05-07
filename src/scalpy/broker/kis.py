@@ -1,5 +1,6 @@
 import asyncio
 import json
+import time
 from collections.abc import Callable
 from datetime import datetime
 from decimal import Decimal
@@ -51,6 +52,16 @@ class KISBroker(BaseBroker):
         self._mock = mock
         self._connected = False
         self._api: Any = None
+        self._daily_pnl: Decimal = Decimal("0")
+        self._last_api_call: float = 0
+        self._api_lock = asyncio.Lock()
+
+    async def _throttle(self) -> None:
+        async with self._api_lock:
+            elapsed = time.monotonic() - self._last_api_call
+            if elapsed < 0.3:
+                await asyncio.sleep(0.3 - elapsed)
+            self._last_api_call = time.monotonic()
 
     async def connect(self) -> None:
         try:
@@ -99,6 +110,7 @@ class KISBroker(BaseBroker):
             order.status = OrderStatus.REJECTED
             return order
 
+        await self._throttle()
         try:
             price = _round_to_tick(int(order.price))
             if order.side == Side.BUY:
@@ -138,19 +150,23 @@ class KISBroker(BaseBroker):
             return []
 
         df = self._api.get_kr_stock_balance()
+        self._position_names: dict[str, str] = {}
         positions: list[Position] = []
-        for _, row in df.iterrows():
+        for symbol_code, row in df.iterrows():
             qty = int(row.get("보유수량", 0))
             if qty == 0:
                 continue
+            code = str(symbol_code)
+            name = str(row.get("종목명", code))
+            self._position_names[code] = name
             positions.append(
                 Position(
-                    symbol=str(row.get("종목명", "")),
+                    symbol=code,
                     side=Side.BUY,
                     quantity=qty,
                     avg_price=Decimal(str(row.get("매입단가", 0))),
                     current_price=Decimal(str(row.get("현재가", 0))),
-                    strategy="manual",
+                    strategy="synced",
                     opened_at=datetime.now(),
                 )
             )
@@ -160,8 +176,15 @@ class KISBroker(BaseBroker):
         if not self._connected or self._api is None:
             return Decimal("0")
 
-        deposit = self._api.get_kr_deposit()
-        return Decimal(str(deposit))
+        await self._throttle()
+        res = self._api._get_kr_total_balance()
+        summary = res.outputs[1][0]
+        value = summary.get("tot_evlu_amt") or summary.get("dnca_tot_amt", "0")
+        self._daily_pnl = Decimal(str(int(summary.get("asst_icdc_amt", "0"))))
+        return Decimal(str(int(value)))
+
+    async def get_trade_history(self) -> list[dict[str, Any]]:
+        return []
 
     async def get_top_volume_stocks(self, count: int = 30) -> list[dict[str, Any]]:
         if not self._connected or self._api is None:

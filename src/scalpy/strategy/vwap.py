@@ -8,6 +8,7 @@ from scalpy.strategy.base import BaseStrategy
 
 class VWAPStrategy(BaseStrategy):
     name = "vwap"
+    display_name = "VWAP 이탈"
     description = "VWAP Deviation — buy below VWAP, sell above VWAP"
 
     def __init__(self) -> None:

@@ -6,6 +6,8 @@ mock = true
 database_url = "postgresql://scalpy:scalpy@localhost:5432/scalpy"
 
 [default.trading]
+# 서버 시작 시 자동으로 트레이딩 시작 (false: 대시보드에서 수동 시작)
+auto_start = false
 # 자동매매 대상 종목코드 목록 (최대 20종목, WebSocket 구독 제한)
 symbols = ["005930", "000660"]
 # 종목당 최대 보유 수량
@@ -26,6 +28,18 @@ min_change_rate = 2.0
 min_volume = 100000
 # 재스크리닝 주기 (분)
 interval_minutes = 30
+
+[default.dashboard]
+# 웹 대시보드 활성화
+enabled = true
+host = "0.0.0.0"
+port = 8080
+
+[default.telegram]
+# 텔레그램 알림 (봇 토큰은 .secrets.toml에 설정)
+enabled = false
+bot_token = ""
+chat_id = ""
 
 [default.strategies]
 # 활성화할 전략 목록 (비활성화하려면 목록에서 제거)

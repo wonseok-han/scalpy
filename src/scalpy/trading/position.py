@@ -18,6 +18,9 @@ class PositionManager:
     def all(self) -> list[Position]:
         return list(self._positions.values())
 
+    def remove(self, symbol: str) -> None:
+        self._positions.pop(symbol, None)
+
     def update_on_fill(self, order: Order) -> Position | None:
         if order.side == Side.BUY:
             return self._open_or_add(order)

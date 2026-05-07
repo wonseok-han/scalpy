@@ -70,6 +70,9 @@ class MockBroker(BaseBroker):
     async def get_balance(self) -> Decimal:
         return self._balance
 
+    async def get_trade_history(self) -> list[dict[str, Any]]:
+        return []
+
     async def get_top_volume_stocks(self, count: int = 30) -> list[dict[str, Any]]:
         return [
             {"symbol": "005930", "name": "삼성전자", "volume": 15_000_000, "price": Decimal("71500"), "change_rate": 2.8, "volume_turnover": 1.5},

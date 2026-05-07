@@ -9,6 +9,7 @@ from scalpy.strategy.base import BaseStrategy
 
 class MACrossStrategy(BaseStrategy):
     name = "ma_cross"
+    display_name = "이동평균 교차"
     description = "Moving Average Crossover — short MA crosses long MA"
 
     def __init__(self) -> None:

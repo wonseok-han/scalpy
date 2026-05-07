@@ -7,6 +7,7 @@ from scalpy.core.models import Signal
 
 class BaseStrategy(ABC):
     name: str
+    display_name: str
     description: str
 
     @abstractmethod

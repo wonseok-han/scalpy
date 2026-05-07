@@ -10,6 +10,7 @@ from scalpy.strategy.base import BaseStrategy
 
 class BollingerStrategy(BaseStrategy):
     name = "bollinger"
+    display_name = "볼린저 밴드"
     description = "Bollinger Band Breakout — buy at lower band, sell at upper band"
 
     def __init__(self) -> None:
