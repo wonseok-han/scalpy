@@ -36,6 +36,11 @@ class TradingEngine:
     def orders(self) -> OrderManager:
         return self._orders
 
+    async def update_symbols(self, symbols: list[str]) -> None:
+        held = {p.symbol for p in self._positions.all()}
+        self._active_symbols = set(symbols) | held
+        logger.info("engine.symbols_updated", symbols=list(self._active_symbols))
+
     async def start(self) -> None:
         await self._broker.connect()
         self._running = True

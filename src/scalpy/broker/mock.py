@@ -2,6 +2,8 @@ from collections.abc import Callable
 from decimal import Decimal
 from typing import Any
 
+
+
 import structlog
 
 from scalpy.broker.base import BaseBroker
@@ -67,6 +69,17 @@ class MockBroker(BaseBroker):
 
     async def get_balance(self) -> Decimal:
         return self._balance
+
+    async def get_top_volume_stocks(self, count: int = 30) -> list[dict[str, Any]]:
+        return [
+            {"symbol": "005930", "name": "삼성전자", "volume": 15_000_000, "price": Decimal("71500"), "change_rate": 2.8, "volume_turnover": 1.5},
+            {"symbol": "000660", "name": "SK하이닉스", "volume": 8_000_000, "price": Decimal("183000"), "change_rate": -2.7, "volume_turnover": 1.2},
+            {"symbol": "035720", "name": "카카오", "volume": 5_000_000, "price": Decimal("54000"), "change_rate": 5.6, "volume_turnover": 2.1},
+            {"symbol": "035420", "name": "NAVER", "volume": 3_000_000, "price": Decimal("208000"), "change_rate": 2.4, "volume_turnover": 0.8},
+            {"symbol": "051910", "name": "LG화학", "volume": 2_000_000, "price": Decimal("377000"), "change_rate": 2.6, "volume_turnover": 0.6},
+            {"symbol": "006400", "name": "삼성SDI", "volume": 1_500_000, "price": Decimal("417000"), "change_rate": 1.1, "volume_turnover": 0.4},
+            {"symbol": "068270", "name": "셀트리온", "volume": 1_200_000, "price": Decimal("174000"), "change_rate": 1.7, "volume_turnover": 0.3},
+        ][:count]
 
     async def subscribe_market_data(
         self, symbols: list[str], callback: Callable[..., Any]

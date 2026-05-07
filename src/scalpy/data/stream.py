@@ -51,6 +51,18 @@ def _subscribe_msg(approval_key: str, tr_id: str, tr_key: str) -> str:
     })
 
 
+def _unsubscribe_msg(approval_key: str, tr_id: str, tr_key: str) -> str:
+    return json.dumps({
+        "header": {
+            "approval_key": approval_key,
+            "custtype": "P",
+            "tr_type": "2",
+            "content-type": "utf-8",
+        },
+        "body": {"input": {"tr_id": tr_id, "tr_key": tr_key}},
+    })
+
+
 class MarketDataStream:
     def __init__(
         self,
@@ -66,6 +78,8 @@ class MarketDataStream:
         self._orderbook_callbacks: list[OrderbookCallback] = []
         self._running = False
         self._ws: Any = None
+        self._subscribed: set[str] = set()
+        self._approval_key: str = ""
 
     def on_tick(self, callback: TickCallback) -> None:
         self._tick_callbacks.append(callback)
@@ -93,19 +107,21 @@ class MarketDataStream:
     async def start(self, symbols: list[str]) -> None:
         if not self._app_key:
             self._running = True
+            self._subscribed = set(symbols)
             logger.info("market_data_stream.started_local", symbols=symbols)
             return
 
-        approval_key = _get_approval_key(self._app_key, self._app_secret, mock=self._mock)
+        self._approval_key = _get_approval_key(self._app_key, self._app_secret, mock=self._mock)
         ws_url = _WS_URLS["virtual" if self._mock else "real"]
 
         self._ws = await websockets.connect(ws_url, ping_interval=None)
         self._running = True
 
         for sym in symbols:
-            await self._ws.send(_subscribe_msg(approval_key, "H0STCNT0", sym))
-            await self._ws.send(_subscribe_msg(approval_key, "H0STASP0", sym))
+            await self._ws.send(_subscribe_msg(self._approval_key, "H0STCNT0", sym))
+            await self._ws.send(_subscribe_msg(self._approval_key, "H0STASP0", sym))
 
+        self._subscribed = set(symbols)
         logger.info("market_data_stream.started", symbols=symbols, mode="websocket")
         asyncio.create_task(self._recv_loop())
 
@@ -162,6 +178,39 @@ class MarketDataStream:
             (Decimal(fields[13 + i]), int(fields[33 + i])) for i in range(10)
         ]
         await self.emit_orderbook(symbol, asks, bids)
+
+    async def update_subscriptions(self, new_symbols: list[str]) -> None:
+        new_set = set(new_symbols)
+        to_remove = self._subscribed - new_set
+        to_add = new_set - self._subscribed
+
+        if not to_remove and not to_add:
+            return
+
+        if self._ws and self._approval_key:
+            for sym in to_remove:
+                try:
+                    await self._ws.send(_unsubscribe_msg(self._approval_key, "H0STCNT0", sym))
+                    await self._ws.send(_unsubscribe_msg(self._approval_key, "H0STASP0", sym))
+                except Exception as e:
+                    logger.warning("market_data_stream.unsubscribe_failed", symbol=sym, error=str(e))
+                await asyncio.sleep(0.05)
+
+            for sym in to_add:
+                try:
+                    await self._ws.send(_subscribe_msg(self._approval_key, "H0STCNT0", sym))
+                    await self._ws.send(_subscribe_msg(self._approval_key, "H0STASP0", sym))
+                except Exception as e:
+                    logger.warning("market_data_stream.subscribe_failed", symbol=sym, error=str(e))
+                await asyncio.sleep(0.05)
+
+        self._subscribed = new_set
+        logger.info(
+            "market_data_stream.subscriptions_updated",
+            removed=list(to_remove),
+            added=list(to_add),
+            total=len(new_set),
+        )
 
     async def stop(self) -> None:
         self._running = False
