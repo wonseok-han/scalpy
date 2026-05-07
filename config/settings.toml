@@ -1,0 +1,31 @@
+[default]
+mock = true
+database_url = "postgresql://scalpy:scalpy@localhost:5432/scalpy"
+
+[default.trading]
+symbols = ["005930", "000660"]
+max_position_size = 100
+stop_loss_ratio = 0.02
+take_profit_ratio = 0.03
+
+[default.strategies]
+enabled = ["ma_cross", "bollinger", "rsi", "orderbook", "vwap"]
+
+[default.strategies.ma_cross]
+short_window = 5
+long_window = 20
+
+[default.strategies.bollinger]
+window = 20
+num_std = 2.0
+
+[default.strategies.rsi]
+window = 14
+oversold = 30
+overbought = 70
+
+[default.strategies.orderbook]
+bid_ask_ratio_threshold = 1.5
+
+[default.strategies.vwap]
+deviation_threshold = 0.005
