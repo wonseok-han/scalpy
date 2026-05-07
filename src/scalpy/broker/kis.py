@@ -11,6 +11,7 @@ import requests
 import structlog
 
 from scalpy.broker.base import BaseBroker
+from scalpy.config import settings
 from scalpy.core.enums import OrderStatus, Side
 from scalpy.core.exceptions import AuthenticationError
 from scalpy.core.models import Order, Position
@@ -190,8 +191,10 @@ class KISBroker(BaseBroker):
         if not self._connected or self._api is None:
             return []
 
-        # 거래량 순위 API는 모의투자 서버 미지원 — 실거래 서버 조회 전용
-        base_url = "https://openapi.koreainvestment.com:9443"
+        rest_urls = settings.get("kis_api.rest_urls", {})
+        base_url = rest_urls.get("real")
+        if not base_url:
+            raise RuntimeError("kis_api.rest_urls.real 설정이 필요합니다 (settings.toml)")
         headers = {
             "content-type": "application/json; charset=utf-8",
             "authorization": f"Bearer {self._api.token.value}",

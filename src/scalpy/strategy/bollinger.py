@@ -14,6 +14,7 @@ class BollingerStrategy(BaseStrategy):
     description = "Bollinger Band Breakout — buy at lower band, sell at upper band"
 
     def __init__(self) -> None:
+        self._init_base()
         self.window: int = 20
         self.num_std: float = 2.0
         self._prices: dict[str, deque[Decimal]] = {}
@@ -45,9 +46,9 @@ class BollingerStrategy(BaseStrategy):
 
         lower, _mid, upper = bands
 
-        if price <= lower:
+        if price <= lower and self._check_cooldown(symbol, "BUY"):
             return Signal(symbol, Side.BUY, self.name, price, 0, 0.65, datetime.now())
-        if price >= upper:
+        if price >= upper and self._check_cooldown(symbol, "SELL"):
             return Signal(symbol, Side.SELL, self.name, price, 0, 0.65, datetime.now())
 
         return None

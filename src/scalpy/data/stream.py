@@ -8,23 +8,33 @@ import requests
 import structlog
 import websockets
 
+from scalpy.config import settings
+
 logger = structlog.get_logger()
 
 TickCallback = Callable[[str, Decimal, int], Any]
 OrderbookCallback = Callable[[str, list[tuple[Decimal, int]], list[tuple[Decimal, int]]], Any]
 
-_WS_URLS = {
-    "virtual": "ws://ops.koreainvestment.com:31000",
-    "real": "ws://ops.koreainvestment.com:21000",
-}
-_REST_URLS = {
-    "virtual": "https://openapivts.koreainvestment.com:29443",
-    "real": "https://openapi.koreainvestment.com:9443",
-}
+def _get_ws_url(mock: bool) -> str:
+    key = "virtual" if mock else "real"
+    cfg = settings.get("kis_api.ws_urls", {})
+    url = cfg.get(key)
+    if not url:
+        raise RuntimeError(f"kis_api.ws_urls.{key} 설정이 필요합니다 (settings.toml)")
+    return url
+
+
+def _get_rest_url(mock: bool) -> str:
+    key = "virtual" if mock else "real"
+    cfg = settings.get("kis_api.rest_urls", {})
+    url = cfg.get(key)
+    if not url:
+        raise RuntimeError(f"kis_api.rest_urls.{key} 설정이 필요합니다 (settings.toml)")
+    return url
 
 
 def _get_approval_key(app_key: str, app_secret: str, *, mock: bool = True) -> str:
-    url = _REST_URLS["virtual" if mock else "real"]
+    url = _get_rest_url(mock)
     resp = requests.post(
         f"{url}/oauth2/Approval",
         headers={"content-type": "application/json"},
@@ -112,7 +122,7 @@ class MarketDataStream:
             return
 
         self._approval_key = _get_approval_key(self._app_key, self._app_secret, mock=self._mock)
-        ws_url = _WS_URLS["virtual" if self._mock else "real"]
+        ws_url = _get_ws_url(self._mock)
 
         self._ws = await websockets.connect(ws_url, ping_interval=None)
         self._running = True
@@ -148,7 +158,7 @@ class MarketDataStream:
             reconnect_delay = min(reconnect_delay * 2, 30)
 
             try:
-                ws_url = _WS_URLS["virtual" if self._mock else "real"]
+                ws_url = _get_ws_url(self._mock)
                 self._ws = await websockets.connect(ws_url, ping_interval=None)
                 for sym in self._subscribed:
                     await self._ws.send(_subscribe_msg(self._approval_key, "H0STCNT0", sym))

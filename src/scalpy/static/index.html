@@ -385,11 +385,72 @@ tbody tr:last-child td { border-bottom: none; }
   display: inline-flex;
   flex-direction: column;
   gap: 2px;
+  cursor: pointer;
+  transition: all 0.2s;
+  user-select: none;
 }
+.strat-chip:hover { border-color: var(--accent); box-shadow: 0 0 8px rgba(59,130,246,0.2); }
+.strat-chip.disabled {
+  background: var(--bg-hover);
+  border-color: var(--border);
+  opacity: 0.5;
+}
+.strat-chip.disabled:hover { border-color: var(--text-tertiary); opacity: 0.7; }
 .strat-chip .strat-name { font-weight: 600; }
 .strat-chip .strat-key { font-size: 0.7rem; color: var(--text-tertiary); font-weight: 400; }
+.strat-chip .strat-status { font-size: 0.65rem; margin-top: 2px; }
 
 .scroll-area { max-height: 340px; overflow-y: auto; }
+
+/* ── Market Timer ── */
+.market-timer {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 14px 20px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+.market-timer .mt-status {
+  font-size: 0.78rem;
+  font-weight: 600;
+  padding: 4px 12px;
+  border-radius: 20px;
+  white-space: nowrap;
+}
+.mt-status.open { background: var(--profit-soft); color: var(--profit); }
+.mt-status.pre { background: rgba(245,158,11,0.12); color: var(--warning); }
+.mt-status.closed { background: var(--loss-soft); color: var(--loss); }
+.mt-status.after { background: rgba(148,163,184,0.12); color: var(--text-secondary); }
+.market-timer .mt-time {
+  font-size: 1.3rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.5px;
+  min-width: 90px;
+}
+.market-timer .mt-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+}
+.market-timer .mt-label { font-size: 0.75rem; color: var(--text-tertiary); }
+.market-timer .mt-remaining {
+  font-size: 0.9rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.market-timer .mt-schedule {
+  font-size: 0.72rem;
+  color: var(--text-tertiary);
+  margin-left: auto;
+  text-align: right;
+  line-height: 1.6;
+  white-space: nowrap;
+}
 
 /* ── Toast ── */
 .toast {
@@ -469,6 +530,21 @@ tbody tr:last-child td { border-bottom: none; }
 </div>
 
 <div class="container">
+
+  <!-- Market Timer -->
+  <div class="market-timer anim-0">
+    <span class="mt-status closed" id="mt-status">장 마감</span>
+    <span class="mt-time" id="mt-clock">--:--:--</span>
+    <div class="mt-info">
+      <span class="mt-label" id="mt-label">다음 개장까지</span>
+      <span class="mt-remaining" id="mt-remaining">--:--:--</span>
+    </div>
+    <div class="mt-schedule">
+      프리마켓 08:30~09:00<br>
+      정규장 09:00~15:30<br>
+      시간외 15:40~16:00
+    </div>
+  </div>
 
   <!-- Metric Cards -->
   <div class="metrics-row">
@@ -629,12 +705,122 @@ tbody tr:last-child td { border-bottom: none; }
 </div>
 
 <script>
+// ── Market Timer ──
+const _MARKET_SESSIONS = [
+  { name: '프리마켓', cls: 'pre', h1: 8, m1: 30, h2: 9, m2: 0 },
+  { name: '정규장', cls: 'open', h1: 9, m1: 0, h2: 15, m2: 30 },
+  { name: '시간외', cls: 'after', h1: 15, m1: 40, h2: 16, m2: 0 },
+];
+
+function _toMin(h, m) { return h * 60 + m; }
+
+function _updateMarketTimer() {
+  const now = new Date();
+  const hh = String(now.getHours()).padStart(2, '0');
+  const mm = String(now.getMinutes()).padStart(2, '0');
+  const ss = String(now.getSeconds()).padStart(2, '0');
+  document.getElementById('mt-clock').textContent = `${hh}:${mm}:${ss}`;
+
+  const nowMin = _toMin(now.getHours(), now.getMinutes());
+  const statusEl = document.getElementById('mt-status');
+  const labelEl = document.getElementById('mt-label');
+  const remainEl = document.getElementById('mt-remaining');
+
+  const day = now.getDay();
+  if (day === 0 || day === 6) {
+    statusEl.textContent = '휴장 (주말)';
+    statusEl.className = 'mt-status closed';
+    labelEl.textContent = '월요일 개장까지';
+    const daysUntilMon = day === 0 ? 1 : 2;
+    const monOpen = new Date(now);
+    monOpen.setDate(monOpen.getDate() + daysUntilMon);
+    monOpen.setHours(9, 0, 0, 0);
+    const diff = monOpen - now;
+    remainEl.textContent = _fmtMs(diff);
+    return;
+  }
+
+  for (const s of _MARKET_SESSIONS) {
+    const start = _toMin(s.h1, s.m1);
+    const end = _toMin(s.h2, s.m2);
+    if (nowMin >= start && nowMin < end) {
+      statusEl.textContent = s.name;
+      statusEl.className = 'mt-status ' + s.cls;
+      const endDate = new Date(now);
+      endDate.setHours(s.h2, s.m2, 0, 0);
+      const diff = endDate - now;
+      labelEl.textContent = s.name === '정규장' ? '장 마감까지' : s.name + ' 종료까지';
+      remainEl.textContent = _fmtMs(diff);
+      return;
+    }
+  }
+
+  statusEl.textContent = '장 마감';
+  statusEl.className = 'mt-status closed';
+  if (nowMin < _toMin(8, 30)) {
+    labelEl.textContent = '프리마켓까지';
+    const target = new Date(now); target.setHours(8, 30, 0, 0);
+    remainEl.textContent = _fmtMs(target - now);
+  } else if (nowMin >= _toMin(15, 30) && nowMin < _toMin(15, 40)) {
+    labelEl.textContent = '시간외까지';
+    const target = new Date(now); target.setHours(15, 40, 0, 0);
+    remainEl.textContent = _fmtMs(target - now);
+  } else {
+    labelEl.textContent = '내일 개장까지';
+    const tmr = new Date(now); tmr.setDate(tmr.getDate() + 1); tmr.setHours(9, 0, 0, 0);
+    remainEl.textContent = _fmtMs(tmr - now);
+  }
+}
+
+function _fmtMs(ms) {
+  if (ms <= 0) return '00:00:00';
+  const totalSec = Math.floor(ms / 1000);
+  const h = String(Math.floor(totalSec / 3600)).padStart(2, '0');
+  const m = String(Math.floor((totalSec % 3600) / 60)).padStart(2, '0');
+  const s = String(totalSec % 60).padStart(2, '0');
+  return `${h}:${m}:${s}`;
+}
+
+_updateMarketTimer();
+setInterval(_updateMarketTimer, 1000);
+
+// ── Utils ──
 function fmt(n){return Number(n).toLocaleString('ko-KR')}
 function pnlSign(v){const n=Number(v);return n>0?'+'+fmt(n):n<0?fmt(n):'0'}
 function pnlType(v){const n=Number(v);return n>0?'up':n<0?'down':'neutral'}
 let _names={};
 let _strats={};
-function stratLabel(key){return _strats[key]||key}
+let _stratEnabled={};
+const _systemLabels={'synced':'기존 보유','manual':'수동 매매','unknown':'알 수 없음'};
+function stratLabel(key){return _strats[key]||_systemLabels[key]||key}
+
+async function toggleStrategy(name){
+  try{
+    const r=await fetch('/api/strategies/'+name+'/toggle',{method:'POST'});
+    const d=await r.json();
+    if(d.success){
+      _stratEnabled[name]=d.enabled;
+      renderStrategies();
+      showToast((stratLabel(name))+(d.enabled?' 활성화':' 비활성화'));
+    }
+  }catch(e){console.error('toggle failed',e)}
+}
+
+function renderStrategies(){
+  const entries=Object.entries(_strats);
+  const enabledCount=entries.filter(([k])=>_stratEnabled[k]!==false).length;
+  document.getElementById('strategy-count').textContent=enabledCount+'/'+entries.length;
+  document.getElementById('strat-badge').textContent=enabledCount+'/'+entries.length;
+  const el=document.getElementById('strategy-list');
+  if(entries.length){
+    el.innerHTML=entries.map(([key,name])=>{
+      const on=_stratEnabled[key]!==false;
+      return `<span class="strat-chip${on?'':' disabled'}" onclick="toggleStrategy('${key}')"><span class="strat-name">${name}</span><span class="strat-key">${key}</span><span class="strat-status" style="color:${on?'var(--profit)':'var(--text-tertiary)'}">${on?'● 활성':'○ 비활성'}</span></span>`;
+    }).join('');
+  } else {
+    el.innerHTML='<span class="screen-empty">-</span>';
+  }
+}
 
 function applyState(d){
   updateStatus(d.status);
@@ -672,17 +858,8 @@ function updateStatus(s){
   document.getElementById('mode').textContent=s.mock?'모의투자':'실거래';
   document.getElementById('mode-chip').textContent=s.mock?'모의투자':'실거래';
   if(s.strategies&&typeof s.strategies==='object'){Object.assign(_strats,s.strategies)}
-  const stratEntries=Object.entries(_strats);
-  document.getElementById('strategy-count').textContent=stratEntries.length+'개';
-  document.getElementById('strat-badge').textContent=stratEntries.length+'개';
-  const stratEl=document.getElementById('strategy-list');
-  if(stratEntries.length){
-    stratEl.innerHTML=stratEntries.map(([key,name])=>
-      `<span class="strat-chip"><span class="strat-name">${name}</span><span class="strat-key">${key}</span></span>`
-    ).join('');
-  } else {
-    stratEl.innerHTML='<span class="screen-empty">-</span>';
-  }
+  if(s.strategy_enabled&&typeof s.strategy_enabled==='object'){Object.assign(_stratEnabled,s.strategy_enabled)}
+  renderStrategies();
   document.getElementById('screening-count-chip').textContent=s.screening_count+'개';
 
   const statusEl=document.getElementById('engine-status');

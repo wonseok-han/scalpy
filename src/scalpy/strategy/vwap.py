@@ -12,6 +12,7 @@ class VWAPStrategy(BaseStrategy):
     description = "VWAP Deviation — buy below VWAP, sell above VWAP"
 
     def __init__(self) -> None:
+        self._init_base()
         self.deviation_threshold: float = 0.005
         self._cumulative_volume: dict[str, int] = {}
         self._cumulative_pv: dict[str, Decimal] = {}
@@ -40,10 +41,10 @@ class VWAPStrategy(BaseStrategy):
 
         deviation = float((price - vwap) / vwap)
 
-        if deviation < -self.deviation_threshold:
+        if deviation < -self.deviation_threshold and self._check_cooldown(symbol, "BUY"):
             return Signal(symbol, Side.BUY, self.name, price, 0, 0.5, datetime.now())
 
-        if deviation > self.deviation_threshold:
+        if deviation > self.deviation_threshold and self._check_cooldown(symbol, "SELL"):
             return Signal(symbol, Side.SELL, self.name, price, 0, 0.5, datetime.now())
 
         return None

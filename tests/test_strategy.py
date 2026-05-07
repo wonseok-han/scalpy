@@ -11,6 +11,7 @@ from scalpy.strategy.vwap import VWAPStrategy
 class TestMACross:
     def setup_method(self) -> None:
         self.strategy = MACrossStrategy()
+        self.strategy.cooldown_seconds = 0
 
     async def test_golden_cross_buy(self) -> None:
         # 20 flat ticks → prev_short == long_ma == 100
@@ -37,6 +38,7 @@ class TestMACross:
 class TestRSI:
     def setup_method(self) -> None:
         self.strategy = RSIStrategy()
+        self.strategy.cooldown_seconds = 0
 
     async def test_oversold_buy(self) -> None:
         # Declining prices → RSI < 30
@@ -63,6 +65,7 @@ class TestRSI:
 class TestBollinger:
     def setup_method(self) -> None:
         self.strategy = BollingerStrategy()
+        self.strategy.cooldown_seconds = 0
 
     async def test_lower_band_buy(self) -> None:
         # Fill window with stable prices, then drop below lower band
@@ -90,6 +93,7 @@ class TestBollinger:
 class TestOrderbook:
     def setup_method(self) -> None:
         self.strategy = OrderbookStrategy()
+        self.strategy.cooldown_seconds = 0
 
     async def test_bid_imbalance_buy(self) -> None:
         asks = [(Decimal("100"), 100)]
@@ -119,6 +123,7 @@ class TestOrderbook:
 class TestVWAP:
     def setup_method(self) -> None:
         self.strategy = VWAPStrategy()
+        self.strategy.cooldown_seconds = 0
 
     async def test_below_vwap_buy(self) -> None:
         for _ in range(10):

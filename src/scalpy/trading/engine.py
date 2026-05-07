@@ -16,6 +16,7 @@ from scalpy.trading.risk import RiskManager
 logger = structlog.get_logger()
 
 _BALANCE_CACHE_TTL = 10
+_MIN_CONFIDENCE = 0.5
 
 
 class TradingEngine:
@@ -98,7 +99,7 @@ class TradingEngine:
                 await self._bus.emit("position.updated", {"symbol": symbol, "current_price": str(price)})
         await self._check_risk(symbol)
 
-        for strategy in self._registry.all():
+        for strategy in self._registry.enabled():
             signal = await strategy.on_tick(symbol, price, volume)
             if signal is not None:
                 await self._process_signal(signal)
@@ -112,7 +113,7 @@ class TradingEngine:
         if not self._running:
             return
 
-        for strategy in self._registry.all():
+        for strategy in self._registry.enabled():
             signal = await strategy.on_orderbook(symbol, asks, bids)
             if signal is not None:
                 await self._process_signal(signal)
@@ -120,8 +121,16 @@ class TradingEngine:
     async def _process_signal(self, signal: Signal) -> None:
         if not self._running:
             return
+        if signal.confidence < _MIN_CONFIDENCE:
+            return
         if self._orders.has_pending_for(signal.symbol):
             return
+
+        if signal.side == Side.BUY:
+            if self._positions.get(signal.symbol) is not None:
+                return
+            if len(self._positions.all()) >= self._risk.max_open_positions:
+                return
 
         balance = await self.get_cached_balance()
         qty = self._risk.get_max_position_size(signal.symbol, balance, signal.price)
@@ -129,6 +138,8 @@ class TradingEngine:
         if signal.side == Side.SELL:
             pos = self._positions.get(signal.symbol)
             if pos is None or pos.quantity == 0:
+                return
+            if pos.strategy != "synced" and pos.strategy != signal.strategy:
                 return
             qty = pos.quantity
 

@@ -13,10 +13,12 @@ class RiskManager:
         stop_loss_ratio: float = 0.02,
         take_profit_ratio: float = 0.03,
         max_position_size: int = 100,
+        max_open_positions: int = 3,
     ) -> None:
         self.stop_loss_ratio = Decimal(str(stop_loss_ratio))
         self.take_profit_ratio = Decimal(str(take_profit_ratio))
         self.max_position_size = max_position_size
+        self.max_open_positions = max_open_positions
 
     def check_stop_loss(self, position: Position) -> bool:
         if position.quantity == 0:
