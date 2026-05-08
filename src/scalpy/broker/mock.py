@@ -48,14 +48,6 @@ class MockBroker(BaseBroker):
         if order.side == Side.BUY:
             self._balance -= cost + commission
             self._total_fees += commission
-            self._pm._positions[order.symbol] = Position(
-                symbol=order.symbol,
-                side=Side.BUY,
-                quantity=order.quantity,
-                avg_price=order.price,
-                current_price=order.price,
-                strategy=order.strategy,
-            )
         else:
             tax = int(cost * _SELL_TAX_RATE)
             fees = commission + tax
@@ -65,7 +57,6 @@ class MockBroker(BaseBroker):
                 realized = (order.price - pos.avg_price) * order.quantity - fees
                 self._daily_pnl += realized
             self._balance += cost - fees
-            self.positions.remove(order.symbol)
 
         logger.info(
             "mock_broker.order_filled",

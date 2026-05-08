@@ -30,7 +30,7 @@ symbols = ["005930", "000660"]
 # 종목당 최대 보유 수량
 max_position_size = 100
 # 동시 보유 최대 포지션 수 (초과 시 신규 매수 차단)
-max_open_positions = 5
+max_open_positions = 3
 # 손절 비율 (0.003 = 0.3%, 평균단가 대비 하락 시 자동 청산)
 stop_loss_ratio = 0.003
 # 익절 비율 (0.015 = 1.5%, 평균단가 대비 상승 시 자동 청산)

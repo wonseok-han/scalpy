@@ -721,6 +721,7 @@ tbody tr:last-child td { border-bottom: none; }
     <div class="card">
       <div class="card-header">
         <span class="card-title">스크리닝 종목</span>
+        <button class="btn" style="padding:2px 8px;font-size:0.7rem" onclick="copyScreeningSymbols()">복사</button>
       </div>
       <div class="card-body">
         <div id="screening-symbols" class="screening-wrap">
@@ -1051,11 +1052,13 @@ function renderPeriodPnl(data){
   }).join('');
 }
 
+let _screeningSymbols=[];
 function updateScreening(s){
   const el=document.getElementById('screening-symbols');
   const names=s.names||{};
   Object.assign(_names,names);
   const syms=s.symbols||[];
+  _screeningSymbols=syms;
   if(!syms.length){
     el.innerHTML='<span class="screen-empty">대기 중</span>';
     return;
@@ -1063,6 +1066,11 @@ function updateScreening(s){
   el.innerHTML=syms.map(sym=>
     `<span class="screen-chip">${names[sym]||sym} <span class="code">${sym}</span></span>`
   ).join('');
+}
+function copyScreeningSymbols(){
+  if(!_screeningSymbols.length){toast('스크리닝 목록이 비어있습니다','error');return;}
+  navigator.clipboard.writeText(_screeningSymbols.join(','));
+  toast(_screeningSymbols.length+'개 종목 복사됨','success');
 }
 
 async function liquidateOne(symbol){

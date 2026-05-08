@@ -327,6 +327,7 @@ tbody tr:last-child td { border-bottom: none; }
         <button class="btn btn-sm" onclick="selectNoneDb()">해제</button>
         <button class="btn btn-sm" onclick="loadDbInfo()">새로고침</button>
       </div>
+      <input type="text" id="db-search" placeholder="종목명/코드 검색 (쉼표 구분 코드 붙여넣기 가능)" oninput="onDbSearch()" style="width:100%;margin-top:8px;padding:7px 10px;background:var(--bg-secondary);border:1px solid var(--border);border-radius:6px;color:var(--text-primary);font-size:0.82rem;outline:none">
       <div id="db-info" class="stock-chips" style="margin-top:10px">
         <span style="color:var(--text-tertiary);font-size:0.8rem">로딩 중...</span>
       </div>
@@ -504,7 +505,8 @@ function renderChips() {
 }
 
 function updateBtBadge() {
-  document.getElementById('bt-selected-badge').textContent = _dbSelected.size + '/' + _dbStocks.length + '종목';
+  const filtered = getFilteredDbStocks();
+  document.getElementById('bt-selected-badge').textContent = _dbSelected.size + '/' + filtered.length + '종목';
 }
 
 function getBtSelectedSymbols() { return [..._dbSelected]; }
@@ -517,14 +519,36 @@ function toggleDbStock(sym) {
 function selectAllDb() { _dbStocks.forEach(s => _dbSelected.add(s.symbol)); renderDbChips(); }
 function selectNoneDb() { _dbSelected.clear(); renderDbChips(); }
 
+function getFilteredDbStocks() {
+  const q = (document.getElementById('db-search')?.value || '').trim();
+  if (!q) return _dbStocks;
+  const codes = q.includes(',') ? q.split(',').map(c => c.trim()).filter(Boolean) : null;
+  if (codes) return _dbStocks.filter(s => codes.includes(s.symbol));
+  const lq = q.toLowerCase();
+  return _dbStocks.filter(s => s.name.toLowerCase().includes(lq) || s.symbol.includes(q));
+}
+
+
+function onDbSearch() {
+  const q = (document.getElementById('db-search')?.value || '').trim();
+  const filtered = getFilteredDbStocks();
+  _dbSelected = q ? new Set(filtered.map(s => s.symbol)) : new Set(_dbStocks.map(s => s.symbol));
+  renderDbChips();
+}
+
 function renderDbChips() {
   const el = document.getElementById('db-info');
+  const filtered = getFilteredDbStocks();
   updateBtBadge();
   if (!_dbStocks.length) {
     el.innerHTML = '<span style="color:var(--text-tertiary);font-size:0.8rem">저장된 데이터 없음 — 위에서 종목을 수집하세요</span>';
     return;
   }
-  el.innerHTML = _dbStocks.map(s => {
+  if (!filtered.length) {
+    el.innerHTML = '<span style="color:var(--text-tertiary);font-size:0.8rem">검색 결과 없음</span>';
+    return;
+  }
+  el.innerHTML = filtered.map(s => {
     const sel = _dbSelected.has(s.symbol) ? ' selected' : '';
     return `<span class="stock-chip${sel}" onclick="toggleDbStock('${s.symbol}')">
       <span class="chip-name">${s.name}</span><span class="chip-code">${s.symbol}</span>
@@ -833,7 +857,7 @@ async function loadDbInfo() {
       count: r.count,
       min_dt: r.min_dt,
       max_dt: r.max_dt,
-    }));
+    })).sort((a, b) => a.name.localeCompare(b.name, 'ko'));
     _dbSelected = new Set(_dbStocks.map(s => s.symbol));
     renderDbChips();
   } catch {
