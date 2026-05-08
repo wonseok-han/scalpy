@@ -20,9 +20,9 @@ class MockBroker(BaseBroker):
     """Mock broker for testing and paper trading."""
 
     def __init__(self, initial_balance: Decimal = Decimal("500000")) -> None:
+        super().__init__()
         self._balance = initial_balance
         self._initial_balance = initial_balance
-        self._positions: dict[str, Position] = {}
         self._connected = False
         self._daily_pnl = Decimal("0")
         self._total_fees = Decimal("0")
@@ -48,7 +48,7 @@ class MockBroker(BaseBroker):
         if order.side == Side.BUY:
             self._balance -= cost + commission
             self._total_fees += commission
-            self._positions[order.symbol] = Position(
+            self._pm._positions[order.symbol] = Position(
                 symbol=order.symbol,
                 side=Side.BUY,
                 quantity=order.quantity,
@@ -60,12 +60,12 @@ class MockBroker(BaseBroker):
             tax = int(cost * _SELL_TAX_RATE)
             fees = commission + tax
             self._total_fees += fees
-            pos = self._positions.get(order.symbol)
+            pos = self.positions.get(order.symbol)
             if pos:
                 realized = (order.price - pos.avg_price) * order.quantity - fees
                 self._daily_pnl += realized
             self._balance += cost - fees
-            self._positions.pop(order.symbol, None)
+            self.positions.remove(order.symbol)
 
         logger.info(
             "mock_broker.order_filled",
@@ -80,8 +80,8 @@ class MockBroker(BaseBroker):
         logger.info("mock_broker.order_cancelled", order_id=order_id)
         return True
 
-    async def get_positions(self) -> list[Position]:
-        return list(self._positions.values())
+    async def sync_positions(self) -> int:
+        return len(self.positions.all())
 
     async def get_balance(self) -> Decimal:
         return self._balance

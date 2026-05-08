@@ -15,6 +15,8 @@ logger = structlog.get_logger()
 
 TickCallback = Callable[[str, Decimal, int], Any]
 OrderbookCallback = Callable[[str, list[tuple[Decimal, int]], list[tuple[Decimal, int]]], Any]
+FillCallback = Callable[[dict[str, Any]], Any]
+VICallback = Callable[[str, bool], Any]
 
 def _get_ws_url(mock: bool) -> str:
     key = "virtual" if mock else "real"
@@ -81,12 +83,16 @@ class MarketDataStream:
         app_secret: str = "",
         *,
         mock: bool = True,
+        hts_id: str = "",
     ) -> None:
         self._app_key = app_key
         self._app_secret = app_secret
         self._mock = mock
+        self._hts_id = hts_id
         self._tick_callbacks: list[TickCallback] = []
         self._orderbook_callbacks: list[OrderbookCallback] = []
+        self._fill_callbacks: list[FillCallback] = []
+        self._vi_callbacks: list[VICallback] = []
         self._running = False
         self._ws: Any = None
         self._subscribed: set[str] = set()
@@ -99,6 +105,12 @@ class MarketDataStream:
 
     def on_orderbook(self, callback: OrderbookCallback) -> None:
         self._orderbook_callbacks.append(callback)
+
+    def on_fill(self, callback: FillCallback) -> None:
+        self._fill_callbacks.append(callback)
+
+    def on_vi(self, callback: VICallback) -> None:
+        self._vi_callbacks.append(callback)
 
     async def emit_tick(self, symbol: str, price: Decimal, volume: int) -> None:
         for cb in self._tick_callbacks:
@@ -114,6 +126,18 @@ class MarketDataStream:
     ) -> None:
         for cb in self._orderbook_callbacks:
             result = cb(symbol, asks, bids)
+            if asyncio.iscoroutine(result):
+                await result
+
+    async def _emit_fill(self, data: dict[str, Any]) -> None:
+        for cb in self._fill_callbacks:
+            result = cb(data)
+            if asyncio.iscoroutine(result):
+                await result
+
+    async def _emit_vi(self, symbol: str, triggered: bool) -> None:
+        for cb in self._vi_callbacks:
+            result = cb(symbol, triggered)
             if asyncio.iscoroutine(result):
                 await result
 
@@ -142,11 +166,20 @@ class MarketDataStream:
         self._ws = await websockets.connect(ws_url, ping_interval=None)
         self._running = True
 
+        if self._hts_id:
+            cni_tr = "H0STCNI9" if self._mock else "H0STCNI0"
+            await self._ws.send(_subscribe_msg(self._approval_key, cni_tr, self._hts_id))
+            await asyncio.sleep(0.1)
+            logger.info("market_data_stream.fill_subscribed", tr_id=cni_tr)
+
         for sym in symbols:
             await self._ws.send(_subscribe_msg(self._approval_key, "H0STCNT0", sym))
             await asyncio.sleep(0.1)
             await self._ws.send(_subscribe_msg(self._approval_key, "H0STASP0", sym))
             await asyncio.sleep(0.1)
+            if not self._mock:
+                await self._ws.send(_subscribe_msg(self._approval_key, "H0STMKO0", sym))
+                await asyncio.sleep(0.1)
 
         self._subscribed = set(symbols)
         logger.info("market_data_stream.started", symbols=symbols, mode="websocket")
@@ -189,11 +222,18 @@ class MarketDataStream:
                 await asyncio.sleep(1)
                 ws_url = _get_ws_url(self._mock)
                 self._ws = await websockets.connect(ws_url, ping_interval=None)
+                if self._hts_id:
+                    cni_tr = "H0STCNI9" if self._mock else "H0STCNI0"
+                    await self._ws.send(_subscribe_msg(self._approval_key, cni_tr, self._hts_id))
+                    await asyncio.sleep(0.2)
                 for sym in self._subscribed:
                     await self._ws.send(_subscribe_msg(self._approval_key, "H0STCNT0", sym))
                     await asyncio.sleep(0.2)
                     await self._ws.send(_subscribe_msg(self._approval_key, "H0STASP0", sym))
                     await asyncio.sleep(0.2)
+                    if not self._mock:
+                        await self._ws.send(_subscribe_msg(self._approval_key, "H0STMKO0", sym))
+                        await asyncio.sleep(0.2)
                 logger.info("market_data_stream.reconnected", symbols=len(self._subscribed))
             except Exception as e:
                 logger.error("market_data_stream.reconnect_failed", error=str(e))
@@ -210,6 +250,10 @@ class MarketDataStream:
                 await self._on_execution(data)
             elif tr_id == "H0STASP0":
                 await self._on_orderbook_data(data)
+            elif tr_id in ("H0STCNI0", "H0STCNI9"):
+                await self._on_fill_notice(data)
+            elif tr_id == "H0STMKO0":
+                await self._on_market_info(data)
         else:
             msg = json.loads(raw)
             tr_id = msg.get("header", {}).get("tr_id", "")
@@ -241,6 +285,45 @@ class MarketDataStream:
         ]
         await self.emit_orderbook(symbol, asks, bids)
 
+    async def _on_fill_notice(self, data: str) -> None:
+        fields = data.split("^")
+        if len(fields) < 14:
+            return
+        cntg_yn = fields[13]
+        rfus_yn = fields[12]
+        symbol = fields[8]
+        side_cd = fields[4]
+        fill_data: dict[str, Any] = {
+            "symbol": symbol,
+            "order_no": fields[2],
+            "side": "sell" if side_cd == "01" else "buy",
+            "quantity": int(fields[9] or "0"),
+            "price": int(fields[10] or "0"),
+            "time": fields[11],
+            "is_fill": cntg_yn == "2",
+            "is_rejected": rfus_yn == "1",
+            "name": fields[23].strip() if len(fields) > 23 else "",
+        }
+        if cntg_yn == "2":
+            logger.info("ws.fill_notice", symbol=symbol, side=fill_data["side"],
+                        qty=fill_data["quantity"], price=fill_data["price"])
+        elif rfus_yn == "1":
+            logger.warning("ws.order_rejected", symbol=symbol, order_no=fill_data["order_no"])
+        await self._emit_fill(fill_data)
+
+    async def _on_market_info(self, data: str) -> None:
+        fields = data.split("^")
+        if len(fields) < 8:
+            return
+        symbol = fields[0]
+        vi_triggered = fields[7] == "Y"
+        halt = fields[1] == "Y"
+        if vi_triggered or halt:
+            logger.warning("ws.vi_triggered", symbol=symbol, halt=halt)
+            await self._emit_vi(symbol, True)
+        else:
+            await self._emit_vi(symbol, False)
+
     async def update_subscriptions(self, new_symbols: list[str]) -> None:
         new_set = set(new_symbols)
         to_remove = self._subscribed - new_set
@@ -254,6 +337,8 @@ class MarketDataStream:
                 try:
                     await self._ws.send(_unsubscribe_msg(self._approval_key, "H0STCNT0", sym))
                     await self._ws.send(_unsubscribe_msg(self._approval_key, "H0STASP0", sym))
+                    if not self._mock:
+                        await self._ws.send(_unsubscribe_msg(self._approval_key, "H0STMKO0", sym))
                 except Exception as e:
                     logger.warning("market_data_stream.unsubscribe_failed", symbol=sym, error=str(e))
                 await asyncio.sleep(0.05)
@@ -262,6 +347,8 @@ class MarketDataStream:
                 try:
                     await self._ws.send(_subscribe_msg(self._approval_key, "H0STCNT0", sym))
                     await self._ws.send(_subscribe_msg(self._approval_key, "H0STASP0", sym))
+                    if not self._mock:
+                        await self._ws.send(_subscribe_msg(self._approval_key, "H0STMKO0", sym))
                 except Exception as e:
                     logger.warning("market_data_stream.subscribe_failed", symbol=sym, error=str(e))
                 await asyncio.sleep(0.05)

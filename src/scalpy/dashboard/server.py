@@ -26,12 +26,13 @@ def create_app(
     screener: Any = None,
     stream: Any = None,
     registry: StrategyRegistry | None = None,
+    trade_repo: Any = None,
 ) -> FastAPI:
     app = FastAPI(title="Scalpy Dashboard", docs_url=None, redoc_url=None)
 
     sse = SSEManager(bus)
     app.state.sse = sse
-    init_routes(state, sse, engine, bus=bus, screener=screener, stream=stream, registry=registry)
+    init_routes(state, sse, engine, bus=bus, screener=screener, stream=stream, registry=registry, trade_repo=trade_repo)
     app.include_router(router)
 
     from scalpy.backtest.routes import router as bt_router
@@ -59,8 +60,9 @@ def start_dashboard_server(
     screener: Any = None,
     stream: Any = None,
     registry: StrategyRegistry | None = None,
+    trade_repo: Any = None,
 ) -> asyncio.Task:
-    app = create_app(state, bus, engine, screener, stream, registry=registry)
+    app = create_app(state, bus, engine, screener, stream, registry=registry, trade_repo=trade_repo)
 
     config = uvicorn.Config(app, host=host, port=port, log_level="info")
     server = uvicorn.Server(config)

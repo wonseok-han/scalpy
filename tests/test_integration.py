@@ -31,7 +31,7 @@ class TestBrokerOrderFlow:
         commission = int(cost * Decimal("0.00015"))
         assert balance == Decimal("10000000") - cost - commission
 
-        positions = await broker.get_positions()
+        positions = broker.positions.all()
         assert len(positions) == 1
         assert positions[0].symbol == "005930"
 
@@ -55,7 +55,7 @@ class TestBrokerOrderFlow:
         sell_fee = int(sell_cost * Decimal("0.00015")) + int(sell_cost * Decimal("0.0018"))
         assert balance == Decimal("10000000") - buy_cost - buy_fee + sell_cost - sell_fee
 
-        positions = await broker.get_positions()
+        positions = broker.positions.all()
         assert len(positions) == 0
 
         await broker.disconnect()
