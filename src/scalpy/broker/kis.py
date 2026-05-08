@@ -2,7 +2,7 @@ import asyncio
 import json
 import time
 from collections.abc import Callable
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -88,12 +88,16 @@ class KISBroker(BaseBroker):
         if _TOKEN_PATH.exists():
             data = json.loads(_TOKEN_PATH.read_text())
             expires = datetime.fromisoformat(data["valid_until"])
-            if expires > datetime.now():
+            if expires > datetime.now() + timedelta(minutes=5):
                 self._api.token.value = data["value"]
                 self._api.token.valid_until = expires
-                logger.info("kis_broker.token_cached")
+                logger.info("kis_broker.token_cached", expires=expires.isoformat())
                 return
+            logger.info("kis_broker.token_expiring_soon", expires=expires.isoformat())
 
+        self._refresh_token()
+
+    def _refresh_token(self) -> None:
         self._api.create_token()
         _TOKEN_PATH.write_text(json.dumps({
             "value": self._api.token.value,
@@ -130,6 +134,7 @@ class KISBroker(BaseBroker):
             )
         except Exception as e:
             order.status = OrderStatus.REJECTED
+            order.reject_reason = str(e)
             logger.warning("kis_broker.order_rejected", symbol=order.symbol, error=str(e))
 
         return order
@@ -146,11 +151,24 @@ class KISBroker(BaseBroker):
             logger.error("kis_broker.cancel_failed", order_id=order_id, error=str(e))
             return False
 
+    def _is_token_expired_error(self, e: Exception) -> bool:
+        return "만료된 token" in str(e)
+
+    def _retry_on_token_expired(self, func):
+        try:
+            return func()
+        except RuntimeError as e:
+            if self._is_token_expired_error(e):
+                logger.warning("kis_broker.token_expired_runtime", error=str(e))
+                self._refresh_token()
+                return func()
+            raise
+
     async def get_positions(self) -> list[Position]:
         if not self._connected or self._api is None:
             return []
 
-        df = self._api.get_kr_stock_balance()
+        df = self._retry_on_token_expired(self._api.get_kr_stock_balance)
         self._position_names: dict[str, str] = {}
         positions: list[Position] = []
         for symbol_code, row in df.iterrows():
@@ -178,7 +196,7 @@ class KISBroker(BaseBroker):
             return Decimal("0")
 
         await self._throttle()
-        res = self._api._get_kr_total_balance()
+        res = self._retry_on_token_expired(self._api._get_kr_total_balance)
         summary = res.outputs[1][0]
         value = summary.get("tot_evlu_amt") or summary.get("dnca_tot_amt", "0")
         self._daily_pnl = Decimal(str(int(summary.get("asst_icdc_amt", "0"))))

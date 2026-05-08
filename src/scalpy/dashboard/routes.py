@@ -1,4 +1,5 @@
 import asyncio
+from decimal import Decimal
 from typing import Any
 
 import structlog
@@ -85,13 +86,11 @@ def _build_realtime_state() -> dict[str, Any]:
                 "strategy": p.strategy,
             })
 
-    cash_balance = _engine_ref._cached_balance if _engine_ref and _engine_ref._cached_balance else Decimal("0")
-    position_value = sum(p.current_price * p.quantity for p in _engine_ref.positions.all()) if _engine_ref else Decimal("0")
-    total_balance = cash_balance + position_value
+    balance_display = _state.last_api_balance if _state and _state.last_api_balance != "-" else "-"
     status: dict[str, Any] = {
         "running": _engine_ref._running if _engine_ref else False,
-        "balance": str(total_balance) if _engine_ref else "-",
-        "daily_pnl": str(total_balance - _engine_ref._broker._initial_balance) if _engine_ref and hasattr(_engine_ref._broker, '_initial_balance') else str(getattr(_engine_ref._broker, '_daily_pnl', 0)) if _engine_ref else "0",
+        "balance": balance_display,
+        "daily_pnl": str(_state.daily_pnl) if _state else "0",
         "last_tick_at": _state.last_tick_at if _state else "",
         "position_count": len(positions),
         "screening_count": len(_state.screening_symbols) if _state else 0,
@@ -136,7 +135,10 @@ async def get_dashboard() -> dict[str, Any]:
     try:
         balance = await asyncio.to_thread(lambda: broker._api._get_kr_total_balance())
         summary = balance.outputs[1][0]
-        base["status"]["balance"] = str(int(summary.get("tot_evlu_amt") or summary.get("dnca_tot_amt", "0")))
+        api_balance = str(int(summary.get("tot_evlu_amt") or summary.get("dnca_tot_amt", "0")))
+        base["status"]["balance"] = api_balance
+        if _state:
+            _state.last_api_balance = api_balance
     except Exception as e:
         logger.error("dashboard.balance_failed", error=str(e))
 
@@ -211,6 +213,8 @@ async def start_engine() -> dict[str, Any]:
         return {"success": False, "error": "engine not available"}
     if _trading_started:
         return {"success": True}
+    if _stream_ref and _stream_ref._stopping:
+        return {"success": False, "error": "stop in progress"}
     try:
         if not _engine_ref._broker._connected:
             await _engine_ref._broker.connect()
@@ -247,17 +251,11 @@ async def stop_engine() -> dict[str, Any]:
     _engine_ref._running = False
     _trading_started = False
 
-    async def _cleanup() -> None:
-        try:
-            if _stream_ref:
-                await _stream_ref.stop()
-            if _bus:
-                await _bus.emit("engine.stopped")
-            logger.info("dashboard.engine_stopped")
-        except Exception as e:
-            logger.error("dashboard.stop_cleanup_failed", error=str(e))
-
-    asyncio.create_task(_cleanup())
+    if _stream_ref:
+        await _stream_ref.stop()
+    if _bus:
+        await _bus.emit("engine.stopped")
+    logger.info("dashboard.engine_stopped")
     return {"success": True}
 
 

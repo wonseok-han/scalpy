@@ -1,8 +1,7 @@
 from collections.abc import Callable
+from datetime import datetime
 from decimal import Decimal
 from typing import Any
-
-
 
 import structlog
 
@@ -44,6 +43,7 @@ class MockBroker(BaseBroker):
             return order
 
         order.status = OrderStatus.FILLED
+        order.filled_at = datetime.now()
         commission = int(cost * _COMMISSION_RATE)
         if order.side == Side.BUY:
             self._balance -= cost + commission

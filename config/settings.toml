@@ -30,17 +30,17 @@ symbols = ["005930", "000660"]
 # 종목당 최대 보유 수량
 max_position_size = 100
 # 동시 보유 최대 포지션 수 (초과 시 신규 매수 차단)
-max_open_positions = 3
-# 손절 비율 (0.02 = 2%, 평균단가 대비 하락 시 자동 청산)
-stop_loss_ratio = 0.005
-# 익절 비율 (0.01 = 1%, 평균단가 대비 상승 시 자동 청산)
-take_profit_ratio = 0.01
+max_open_positions = 5
+# 손절 비율 (0.003 = 0.3%, 평균단가 대비 하락 시 자동 청산)
+stop_loss_ratio = 0.003
+# 익절 비율 (0.015 = 1.5%, 평균단가 대비 상승 시 자동 청산)
+take_profit_ratio = 0.015
 
 [default.screening]
 # 자동 종목 스크리닝 활성화 (false: settings.toml의 symbols 사용)
 enabled = true
 # 동시 트레이딩 최대 종목 수
-max_stocks = 5
+max_stocks = 10
 # 최소 등락률 임계값 (2.0 = 2%, 전일 대비)
 min_change_rate = 2.0
 # 최소 거래량 (이하 종목 제외)
@@ -64,30 +64,30 @@ chat_id = ""
 # 초기 활성 전략 (UI에서 런타임 토글 가능)
 # 사용 가능: ma_cross, bollinger, rsi, orderbook, vwap
 # orderbook: 호가창 노이즈 과다, vwap: 서버 시작 시점 누적 문제, rsi: 추세장 역행 위험
-enabled = ["ma_cross", "bollinger"]
+enabled = ["bollinger"]
 
 [default.strategies.ma_cross]
 # 단기 이동평균 기간 (최근 N개 체결가의 평균)
 short_window = 5
 # 장기 이동평균 기간 (골든/데드크로스 판단 기준)
-long_window = 20
+long_window = 15
 # 같은 종목 같은 방향 신호 재발생 쿨다운 (초)
 cooldown_seconds = 30
 
 [default.strategies.bollinger]
 # 볼린저밴드 이동평균 기간
-window = 20
+window = 15
 # 표준편차 배수 (밴드 폭 결정, 클수록 넓은 밴드)
-num_std = 2.0
+num_std = 1.5
 cooldown_seconds = 30
 
 [default.strategies.rsi]
 # RSI 계산 기간
 window = 14
 # 과매도 기준 (이하이면 매수 신호)
-oversold = 30
+oversold = 25
 # 과매수 기준 (이상이면 매도 신호)
-overbought = 70
+overbought = 65
 cooldown_seconds = 30
 
 [default.strategies.orderbook]

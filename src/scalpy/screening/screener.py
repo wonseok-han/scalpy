@@ -6,6 +6,8 @@ from scalpy.broker.base import BaseBroker
 
 logger = structlog.get_logger()
 
+_ETF_PREFIXES = ("KODEX", "TIGER", "KBSTAR", "ARIRANG", "SOL", "ACE", "HANARO", "KOSEF", "PLUS")
+
 
 class StockScreener:
     def __init__(
@@ -55,6 +57,14 @@ class StockScreener:
     def _filter(self, stocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
         result = []
         for s in stocks:
+            code = s.get("symbol", "")
+            if code and not code[0].isdigit():
+                continue
+            if code.startswith("9"):
+                continue
+            name = s.get("name", "")
+            if any(name.startswith(p) for p in _ETF_PREFIXES):
+                continue
             if s.get("volume", 0) < self._min_volume:
                 continue
             if abs(s.get("change_rate", 0.0)) < self._min_change_rate:

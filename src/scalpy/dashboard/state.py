@@ -38,6 +38,7 @@ class DashboardState:
     engine_running: bool = False
     last_tick_at: str = ""
     daily_pnl: Decimal = Decimal("0")
+    last_api_balance: str = "-"
 
     def register_handlers(self, bus: EventBus) -> None:
         bus.subscribe("order.filled", self._on_order_filled)
@@ -56,6 +57,7 @@ class DashboardState:
             quantity=data.get("qty", 0),
             price=str(data.get("price", "")),
             strategy=data.get("strategy", ""),
+            pnl=data.get("pnl", ""),
         ))
 
     def _on_signal(self, data: dict[str, Any]) -> None:

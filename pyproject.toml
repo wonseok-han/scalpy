@@ -26,6 +26,7 @@ dev = [
 
 [project.scripts]
 scalpy = "scalpy.main:main"
+scalpy-backtest = "scalpy.backtest.cli:main"
 
 [build-system]
 requires = ["hatchling"]

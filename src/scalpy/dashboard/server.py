@@ -30,12 +30,22 @@ def create_app(
     app = FastAPI(title="Scalpy Dashboard", docs_url=None, redoc_url=None)
 
     sse = SSEManager(bus)
+    app.state.sse = sse
     init_routes(state, sse, engine, bus=bus, screener=screener, stream=stream, registry=registry)
     app.include_router(router)
+
+    from scalpy.backtest.routes import router as bt_router
+    app.include_router(bt_router)
 
     @app.get("/")
     async def index() -> HTMLResponse:
         return HTMLResponse(_INDEX_HTML.read_text())
+
+    _bt_html = _STATIC_DIR / "backtest.html"
+
+    @app.get("/backtest")
+    async def backtest_page() -> HTMLResponse:
+        return HTMLResponse(_bt_html.read_text())
 
     return app
 
@@ -58,5 +68,6 @@ def start_dashboard_server(
 
     task = asyncio.create_task(server.serve())
     task._uvicorn_server = server
+    task._sse = app.state.sse
     logger.info("dashboard.started", host=host, port=port, url=f"http://localhost:{port}")
     return task

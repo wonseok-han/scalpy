@@ -239,16 +239,22 @@ async def run() -> None:
     await stop_event.wait()
 
     async def _shutdown() -> None:
-        await stream.stop()
-        await engine.stop()
-
         if dashboard_task is not None:
+            sse = getattr(dashboard_task, '_sse', None)
+            if sse:
+                sse.stop()
             server = getattr(dashboard_task, '_uvicorn_server', None)
             if server:
                 server.should_exit = True
-            dashboard_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await dashboard_task
+                try:
+                    await asyncio.wait_for(dashboard_task, timeout=3)
+                except (asyncio.TimeoutError, asyncio.CancelledError):
+                    dashboard_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await dashboard_task
+
+        await stream.stop()
+        await engine.stop()
 
     try:
         await asyncio.wait_for(_shutdown(), timeout=5)

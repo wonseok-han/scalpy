@@ -40,6 +40,7 @@ class VWAPStrategy(BaseStrategy):
         return self._cumulative_pv[symbol] / total_vol
 
     async def on_tick(self, symbol: str, price: Decimal, volume: int) -> Signal | None:
+        self._advance_tick(symbol)
         vwap = self._update_vwap(symbol, price, volume)
         if vwap is None:
             return None

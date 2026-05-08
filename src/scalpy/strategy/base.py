@@ -20,12 +20,28 @@ class BaseStrategy(ABC):
         self.enabled: bool = True
         self.cooldown_seconds: int = _DEFAULT_COOLDOWN
         self._last_signal_at: dict[str, float] = {}
+        self._tick_count: dict[str, int] = {}
+        self._last_signal_tick: dict[str, int] = {}
+        self._backtest_mode: bool = False
+        self.cooldown_ticks: int = 1
 
     def reset(self) -> None:
         self._last_signal_at.clear()
+        self._tick_count.clear()
+        self._last_signal_tick.clear()
+
+    def _advance_tick(self, symbol: str) -> None:
+        self._tick_count[symbol] = self._tick_count.get(symbol, 0) + 1
 
     def _check_cooldown(self, symbol: str, side: str) -> bool:
         key = f"{symbol}:{side}"
+        if self._backtest_mode:
+            tick = self._tick_count.get(symbol, 0)
+            last = self._last_signal_tick.get(key, -999)
+            if tick - last < self.cooldown_ticks:
+                return False
+            self._last_signal_tick[key] = tick
+            return True
         now = time.monotonic()
         last = self._last_signal_at.get(key, 0)
         if now - last < self.cooldown_seconds:

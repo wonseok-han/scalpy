@@ -43,6 +43,7 @@ class RSIStrategy(BaseStrategy):
         return 100.0 - (100.0 / (1.0 + rs))
 
     async def on_tick(self, symbol: str, price: Decimal, volume: int) -> Signal | None:
+        self._advance_tick(symbol)
         prices = self._get_prices(symbol)
         prices.append(price)
 
