@@ -61,6 +61,11 @@ class MACrossStrategy(BaseStrategy):
 
         return None
 
+    def prefill(self, symbol: str, candles: list[dict]) -> None:
+        prices = self._get_prices(symbol)
+        for c in candles[-(self.long_window + 1) :]:
+            prices.append(Decimal(str(c["close"])))
+
     async def on_orderbook(
         self,
         symbol: str,

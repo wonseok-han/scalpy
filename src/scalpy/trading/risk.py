@@ -22,11 +22,12 @@ class RiskManager:
         self.max_open_positions = max_open_positions
         self.max_position_ratio = max_position_ratio
 
-    def check_stop_loss(self, position: Position) -> bool:
+    def check_stop_loss(self, position: Position, override_ratio: Decimal | None = None) -> bool:
         if position.quantity == 0:
             return False
+        ratio = override_ratio if override_ratio is not None else self.stop_loss_ratio
         loss_ratio = (position.avg_price - position.current_price) / position.avg_price
-        triggered = loss_ratio >= self.stop_loss_ratio
+        triggered = loss_ratio >= ratio
         if triggered:
             logger.warning(
                 "risk.stop_loss_triggered",
@@ -35,11 +36,12 @@ class RiskManager:
             )
         return triggered
 
-    def check_take_profit(self, position: Position) -> bool:
+    def check_take_profit(self, position: Position, override_ratio: Decimal | None = None) -> bool:
         if position.quantity == 0:
             return False
+        ratio = override_ratio if override_ratio is not None else self.take_profit_ratio
         gain_ratio = (position.current_price - position.avg_price) / position.avg_price
-        triggered = gain_ratio >= self.take_profit_ratio
+        triggered = gain_ratio >= ratio
         if triggered:
             logger.info(
                 "risk.take_profit_triggered",

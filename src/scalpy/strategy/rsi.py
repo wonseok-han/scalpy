@@ -58,6 +58,11 @@ class RSIStrategy(BaseStrategy):
 
         return None
 
+    def prefill(self, symbol: str, candles: list[dict]) -> None:
+        prices = self._get_prices(symbol)
+        for c in candles[-(self.window + 2) :]:
+            prices.append(Decimal(str(c["close"])))
+
     async def on_orderbook(
         self,
         symbol: str,

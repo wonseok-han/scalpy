@@ -14,6 +14,7 @@ from scalpy.core.models import Position, Signal
 from scalpy.events.bus import EventBus
 from scalpy.strategy.registry import StrategyRegistry
 from scalpy.trading.order import OrderManager
+from scalpy.trading.performance import PerformanceTracker
 from scalpy.trading.position import PositionManager
 from scalpy.trading.risk import RiskManager
 
@@ -24,8 +25,8 @@ _SYNC_INTERVAL = 10
 _RISK_CHECK_INTERVAL = 10
 _MIN_CONFIDENCE = 0.5
 _REJECTED_COOLDOWN = 60
-_CLOSE_COOLDOWN = 300
-_MIN_PROFIT_RATIO = Decimal("0.003")
+_CLOSE_COOLDOWN = 1800
+_MIN_PROFIT_RATIO = Decimal("0.005")
 _KST = zoneinfo.ZoneInfo("Asia/Seoul")
 _CUTOFF_BUY = dt_time(15, 15)
 _CUTOFF_CLOSE = dt_time(15, 18)
@@ -56,6 +57,7 @@ class TradingEngine:
         self._sync_loop_task: asyncio.Task[None] | None = None
         self._sync_running = False
         self._active_symbols: set[str] = set()
+        self._performance = PerformanceTracker()
 
     def set_event_bus(self, bus: EventBus) -> None:
         self._bus = bus
@@ -99,6 +101,13 @@ class TradingEngine:
                 await self._check_risk(pos.symbol)
 
         return count
+
+    def prefill_strategies(self, symbol: str, candles: list[dict]) -> None:
+        if not candles:
+            return
+        for strategy in self._registry.all():
+            strategy.prefill(symbol, candles)
+        logger.info("engine.prefilled", symbol=symbol, candles=len(candles))
 
     async def update_symbols(self, symbols: list[str]) -> None:
         held = {p.symbol for p in self.positions.all()}
@@ -297,6 +306,7 @@ class TradingEngine:
         balance = await self.get_cached_balance()
         qty = self._risk.get_max_position_size(signal.symbol, balance, signal.price)
 
+        sell_pos: Position | None = None
         if signal.side == Side.SELL:
             pos = self.positions.get(signal.symbol)
             if pos is None or pos.quantity == 0:
@@ -306,6 +316,7 @@ class TradingEngine:
             gain = (pos.current_price - pos.avg_price) / pos.avg_price if pos.avg_price > 0 else Decimal("0")
             if gain < _MIN_PROFIT_RATIO:
                 return
+            sell_pos = pos
             qty = pos.quantity
 
         if qty <= 0:
@@ -363,6 +374,9 @@ class TradingEngine:
                         },
                     )
                 elif result.side == Side.SELL:
+                    if sell_pos:
+                        pnl = (result.price - sell_pos.avg_price) * result.quantity
+                        self._performance.record_trade(result.strategy, pnl)
                     await self._bus.emit(
                         "position.closed",
                         {
@@ -392,14 +406,24 @@ class TradingEngine:
         if self._bus:
             await self._bus.emit("engine.stopped")
 
+    def _get_strategy_risk(self, strategy_name: str) -> tuple[Decimal | None, Decimal | None]:
+        strategy = self._registry.get(strategy_name)
+        if strategy is None:
+            return None, None
+        sl = Decimal(str(strategy.stop_loss_ratio)) if strategy.stop_loss_ratio is not None else None
+        tp = Decimal(str(strategy.take_profit_ratio)) if strategy.take_profit_ratio is not None else None
+        return sl, tp
+
     async def _check_risk(self, symbol: str) -> None:
         pos = self.positions.get(symbol)
         if pos is None:
             return
 
-        if self._risk.check_stop_loss(pos):
+        sl_ratio, tp_ratio = self._get_strategy_risk(pos.strategy)
+
+        if self._risk.check_stop_loss(pos, sl_ratio):
             await self._force_close(pos, reason="stop_loss")
-        elif self._risk.check_take_profit(pos):
+        elif self._risk.check_take_profit(pos, tp_ratio):
             await self._force_close(pos, reason="take_profit")
 
     async def _force_close(self, pos: Position, reason: str = "") -> None:
@@ -430,6 +454,8 @@ class TradingEngine:
         if result.status == OrderStatus.FILLED:
             self.positions.update_on_fill(result)
             self._closed_symbols[pos.symbol] = time.monotonic()
+            pnl = (result.price - pos.avg_price) * result.quantity
+            self._performance.record_trade(pos.strategy, pnl)
             logger.info(
                 "engine.position_force_closed", symbol=pos.symbol, reason=reason
             )

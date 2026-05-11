@@ -13,6 +13,18 @@ from scalpy.strategy.registry import StrategyRegistry
 
 logger = structlog.get_logger()
 
+_ETF_PREFIXES = ("KODEX", "TIGER", "KBSTAR", "RISE", "ARIRANG", "SOL", "ACE", "HANARO", "KOSEF", "PLUS")
+
+
+def _is_etf(symbol: str, name: str) -> bool:
+    if symbol and not symbol[0].isdigit():
+        return True
+    if symbol.startswith("9"):
+        return True
+    if any(name.startswith(p) for p in _ETF_PREFIXES):
+        return True
+    return False
+
 router = APIRouter(prefix="/api")
 
 _state: DashboardState | None = None
@@ -149,8 +161,8 @@ async def health() -> dict[str, Any]:
 async def get_status() -> dict[str, Any]:
     """엔진 상태 — 캐시 데이터만, 즉시 반환."""
     mock = settings.get("mock", True)
-    strategy_names = {s.name: s.display_name for s in _registry_ref.all()} if _registry_ref else {}
-    strategy_enabled = {s.name: s.enabled for s in _registry_ref.all()} if _registry_ref else {}
+    strategy_names = {s.name: s.display_name for s in _registry_ref.all() if s.name in _SCALPING_STRATEGIES} if _registry_ref else {}
+    strategy_enabled = {s.name: s.enabled for s in _registry_ref.all() if s.name in _SCALPING_STRATEGIES} if _registry_ref else {}
     pos_count = len(_engine_ref.positions.all()) if _engine_ref else 0
     total_fees = "0"
     trade_count = 0
@@ -322,6 +334,71 @@ async def cancel_all_orders() -> dict[str, Any]:
         return {"success": False, "error": str(e)}
 
 
+_SCALPING_STRATEGIES = {"ma_cross", "bollinger", "rsi", "orderbook", "vwap"}
+_QUANT_STRATEGIES = {"momentum", "mean_reversion", "factor"}
+
+
+def _apply_mode(mode: str) -> None:
+    if not _registry_ref:
+        return
+    if mode == "scalping":
+        for s in _registry_ref.all():
+            if s.name in _QUANT_STRATEGIES:
+                s.enabled = False
+    elif mode == "quant":
+        for s in _registry_ref.all():
+            if s.name in _SCALPING_STRATEGIES:
+                s.enabled = False
+
+
+async def _quant_start() -> list[str]:
+    """Quant flow: top volume -> OHLCV fetch -> screen -> prefill."""
+    from scalpy.data.ohlcv import OhlcvRepository
+    from scalpy.screening.quant_screener import QuantScreener
+
+    db_url = settings.get("database_url", "")
+    if not db_url:
+        return []
+
+    quant_cfg = settings.get("quant", {})
+    broker = _engine_ref._broker if _engine_ref else None
+
+    universe = quant_cfg.get("universe", [])
+    if not universe and broker:
+        top = await broker.get_top_volume_stocks(30)
+        top = [s for s in top if not _is_etf(s.get("symbol", ""), s.get("name", ""))]
+        universe = [s["symbol"] for s in top]
+        if _state:
+            for s in top:
+                if s.get("name"):
+                    _state.symbol_names[s["symbol"]] = s["name"]
+
+    if not universe:
+        return []
+
+    ohlcv_repo = OhlcvRepository(db_url)
+    ohlcv_repo.create_tables()
+    ohlcv_repo.bulk_fetch(universe, interval="1d", period="3mo")
+
+    screener = QuantScreener(
+        ohlcv_repo=ohlcv_repo,
+        max_stocks=quant_cfg.get("max_stocks", 10),
+        momentum_days=quant_cfg.get("momentum_days", 20),
+        min_avg_volume=quant_cfg.get("min_avg_volume", 500_000),
+        min_momentum=quant_cfg.get("min_momentum", 0.0),
+    )
+    held = [p.symbol for p in _engine_ref.positions.all()] if _engine_ref else []
+    selected = screener.scan(universe, held_symbols=held)
+
+    if selected and _engine_ref:
+        for sym in selected:
+            candles = ohlcv_repo.get_candles(sym, interval="1d", limit=60)
+            if candles:
+                _engine_ref.prefill_strategies(sym, candles)
+
+    return selected
+
+
 @router.post("/actions/start")
 async def start_engine() -> dict[str, Any]:
     global _trading_started
@@ -338,26 +415,40 @@ async def start_engine() -> dict[str, Any]:
         _engine_ref._running = True
         _engine_ref.start_background_loops()
 
-        symbols = list(settings.get("trading.symbols", ["005930"]))
-        if _screener_ref:
+        trading_cfg = settings.get("trading", {})
+        mode = trading_cfg.get("mode", "scalping")
+        _apply_mode(mode)
+
+        symbols: list[str] = []
+
+        if mode in ("quant", "both"):
+            quant_symbols = await _quant_start()
+            symbols.extend(quant_symbols)
+
+        if mode in ("scalping", "both") and _screener_ref:
             held = [p.symbol for p in _engine_ref.positions.all()]
             scanned = await _screener_ref.scan(held_symbols=held)
             if scanned:
-                symbols = scanned
+                symbols.extend(s for s in scanned if s not in symbols)
             if _bus:
-                await _bus.emit("screening.completed", {"symbols": symbols, "names": _screener_ref.symbol_names})
+                await _bus.emit("screening.completed", {"symbols": scanned or [], "names": _screener_ref.symbol_names})
+
+        if not symbols:
+            symbols = list(settings.get("trading.symbols", ["005930"]))
 
         if _stream_ref:
             held = [p.symbol for p in _engine_ref.positions.all()]
             start_symbols = list(set(symbols) | set(held))
             await _stream_ref.start(start_symbols)
 
+        await _engine_ref.update_symbols(symbols)
+
         if _bus:
             await _bus.emit("engine.started")
 
         _trading_started = True
-        logger.info("dashboard.engine_started", symbols=symbols)
-        return {"success": True, "symbols": symbols}
+        logger.info("dashboard.engine_started", mode=mode, symbols=symbols)
+        return {"success": True, "mode": mode, "symbols": symbols}
     except Exception as e:
         logger.error("dashboard.start_failed", error=str(e))
         return {"success": False, "error": str(e)}
@@ -404,15 +495,299 @@ async def rescan() -> dict[str, Any]:
 
 
 @router.post("/strategies/{name}/toggle")
-async def toggle_strategy(name: str) -> dict[str, Any]:
+async def toggle_strategy(name: str, body: dict[str, Any] | None = None) -> dict[str, Any]:
     if _registry_ref is None:
         return {"success": False, "error": "registry not available"}
+
+    mode = (body or {}).get("mode", "")
+    if mode == "scalping" and name not in _SCALPING_STRATEGIES:
+        return {"success": False, "error": "not a scalping strategy"}
+    if mode == "quant" and name not in _QUANT_STRATEGIES:
+        return {"success": False, "error": "not a quant strategy"}
+
     result = _registry_ref.toggle(name)
     if result is None:
         return {"success": False, "error": "strategy not found"}
     if _sse:
         _sse.broadcast("state", _build_sse_state())
     return {"success": True, "name": name, "enabled": result}
+
+
+@router.post("/ohlcv/fetch")
+async def fetch_ohlcv(body: dict[str, Any] | None = None) -> dict[str, Any]:
+    db_url = settings.get("database_url", "")
+    if not db_url:
+        return {"success": False, "error": "database_url not configured"}
+
+    from scalpy.data.ohlcv import OhlcvRepository
+
+    repo = OhlcvRepository(db_url)
+    repo.create_tables()
+
+    params = body or {}
+    symbols = params.get("symbols", [])
+    interval = params.get("interval", "1d")
+    period = params.get("period")
+    if not symbols and _engine_ref:
+        symbols = list(_engine_ref._active_symbols)
+    if not symbols:
+        symbols = settings.get("trading.symbols", ["005930"])
+
+    total = repo.bulk_fetch(symbols, interval=interval, period=period)
+    return {"success": True, "symbols": symbols, "interval": interval, "rows_added": total}
+
+
+@router.get("/ohlcv/{symbol}")
+async def get_ohlcv(symbol: str, interval: str = "1d", limit: int = 60) -> dict[str, Any]:
+    db_url = settings.get("database_url", "")
+    if not db_url:
+        return {"data": []}
+
+    from scalpy.data.ohlcv import OhlcvRepository
+
+    repo = OhlcvRepository(db_url)
+    data = repo.get_candles(symbol, interval=interval, limit=limit)
+    return {"data": data}
+
+
+@router.get("/quant/scan")
+async def quant_scan() -> dict[str, Any]:
+    db_url = settings.get("database_url", "")
+    if not db_url:
+        return {"data": [], "error": "database_url not configured"}
+
+    from scalpy.data.ohlcv import OhlcvRepository
+    from scalpy.screening.quant_screener import QuantScreener
+
+    quant_cfg = settings.get("quant", {})
+    ohlcv_repo = OhlcvRepository(db_url)
+
+    universe = quant_cfg.get("universe", [])
+    if not universe and _engine_ref:
+        universe = list(_engine_ref._active_symbols)
+    if not universe:
+        try:
+            broker = _engine_ref._broker if _engine_ref else None
+            if broker:
+                top = await broker.get_top_volume_stocks(30)
+                top = [s for s in top if not _is_etf(s.get("symbol", ""), s.get("name", ""))]
+                universe = [s["symbol"] for s in top]
+                if _state:
+                    for s in top:
+                        if s.get("name"):
+                            _state.symbol_names[s["symbol"]] = s["name"]
+        except Exception:
+            pass
+    if not universe:
+        universe = settings.get("trading.symbols", ["005930"])
+
+    ohlcv_repo.bulk_fetch(universe, interval="1d", period="3mo")
+
+    screener = QuantScreener(
+        ohlcv_repo=ohlcv_repo,
+        max_stocks=quant_cfg.get("max_stocks", 10),
+        momentum_days=quant_cfg.get("momentum_days", 20),
+        min_avg_volume=quant_cfg.get("min_avg_volume", 500_000),
+        min_momentum=quant_cfg.get("min_momentum", 0.0),
+    )
+    held = [p.symbol for p in _engine_ref.positions.all()] if _engine_ref else []
+    screener.scan(universe, held_symbols=held)
+    results = screener.get_last_scan()
+
+    names = _state.symbol_names if _state else {}
+    for r in results:
+        r["name"] = names.get(r["symbol"], r["symbol"])
+
+    return {"data": results}
+
+
+@router.get("/performance")
+async def performance() -> dict[str, Any]:
+    if not _engine_ref:
+        return {"data": {}}
+    return {"data": _engine_ref._performance.all_stats()}
+
+
+@router.get("/quant/config")
+async def quant_config() -> dict[str, Any]:
+    trading = settings.get("trading", {})
+    quant = settings.get("quant", {})
+    return {
+        "mode": trading.get("mode", "scalping"),
+        "quant": dict(quant),
+        "strategies": {
+            s.name: {
+                "enabled": s.enabled,
+                "display_name": s.display_name,
+                "stop_loss_ratio": s.stop_loss_ratio,
+                "take_profit_ratio": s.take_profit_ratio,
+            }
+            for s in (_registry_ref.all() if _registry_ref else [])
+            if s.name in _QUANT_STRATEGIES
+        },
+    }
+
+
+@router.get("/settings")
+async def get_settings() -> dict[str, Any]:
+    trading = settings.get("trading", {})
+    quant = settings.get("quant", {})
+    screening = settings.get("screening", {})
+    risk = {}
+    if _engine_ref:
+        r = _engine_ref._risk
+        risk = {
+            "stop_loss_ratio": float(r.stop_loss_ratio),
+            "take_profit_ratio": float(r.take_profit_ratio),
+            "max_position_size": r.max_position_size,
+            "max_open_positions": r.max_open_positions,
+            "max_position_ratio": r.max_position_ratio,
+        }
+    strats = {}
+    if _registry_ref:
+        for s in _registry_ref.all():
+            params = {}
+            for k in vars(s):
+                if k.startswith("_") or k in ("name", "display_name", "enabled"):
+                    continue
+                v = getattr(s, k)
+                if isinstance(v, (int, float, str, bool)):
+                    params[k] = v
+            strats[s.name] = {
+                "display_name": s.display_name,
+                "enabled": s.enabled,
+                "params": params,
+            }
+    return {
+        "trading": dict(trading),
+        "quant": dict(quant),
+        "screening": dict(screening),
+        "risk": risk,
+        "strategies": strats,
+    }
+
+
+@router.post("/settings")
+async def update_settings(body: dict[str, Any]) -> dict[str, Any]:
+    from decimal import Decimal
+    applied = []
+
+    if "trading" in body:
+        t = body["trading"]
+        for k, v in t.items():
+            settings.set(f"trading.{k}", v)
+        applied.append("trading")
+
+    if "quant" in body:
+        q = body["quant"]
+        for k, v in q.items():
+            settings.set(f"quant.{k}", v)
+        applied.append("quant")
+
+    if "screening" in body:
+        sc = body["screening"]
+        for k, v in sc.items():
+            settings.set(f"screening.{k}", v)
+        applied.append("screening")
+
+    if "risk" in body and _engine_ref:
+        r = body["risk"]
+        rm = _engine_ref._risk
+        if "stop_loss_ratio" in r:
+            rm.stop_loss_ratio = Decimal(str(r["stop_loss_ratio"]))
+        if "take_profit_ratio" in r:
+            rm.take_profit_ratio = Decimal(str(r["take_profit_ratio"]))
+        if "max_position_size" in r:
+            rm.max_position_size = int(r["max_position_size"])
+        if "max_open_positions" in r:
+            rm.max_open_positions = int(r["max_open_positions"])
+        if "max_position_ratio" in r:
+            rm.max_position_ratio = float(r["max_position_ratio"])
+        applied.append("risk")
+
+    if "strategies" in body and _registry_ref:
+        for name, cfg in body["strategies"].items():
+            s = _registry_ref.get(name)
+            if not s:
+                continue
+            if "enabled" in cfg:
+                s.enabled = bool(cfg["enabled"])
+            params = cfg.get("params", {})
+            if params:
+                s.configure(params)
+        applied.append("strategies")
+
+    if _sse:
+        _sse.broadcast("state", _build_sse_state())
+    return {"success": True, "applied": applied}
+
+
+@router.post("/settings/persist")
+async def persist_settings() -> dict[str, Any]:
+    """현재 런타임 설정을 settings.toml에 기록한다 (주석 보존)."""
+    import tomlkit
+    from scalpy.config import _PROJECT_ROOT
+
+    toml_path = _PROJECT_ROOT / "config" / "settings.toml"
+    try:
+        doc = tomlkit.parse(toml_path.read_text())
+    except Exception as e:
+        return {"success": False, "error": f"TOML 읽기 실패: {e}"}
+
+    d = doc.setdefault("default", {})
+
+    # trading
+    trading = d.setdefault("trading", {})
+    for k in ("mode", "auto_start", "symbols", "max_position_size",
+              "max_position_ratio", "max_open_positions",
+              "stop_loss_ratio", "take_profit_ratio"):
+        v = settings.get(f"trading.{k}")
+        if v is not None:
+            trading[k] = v
+
+    # screening
+    screening = d.setdefault("screening", {})
+    for k in ("enabled", "max_stocks", "min_change_rate", "max_change_rate",
+              "min_change_rate_lower", "min_volume", "interval_minutes"):
+        v = settings.get(f"screening.{k}")
+        if v is not None:
+            screening[k] = v
+
+    # quant
+    quant = d.setdefault("quant", {})
+    for k in ("max_stocks", "momentum_days", "min_avg_volume",
+              "min_momentum", "ohlcv_refresh_minutes", "universe"):
+        v = settings.get(f"quant.{k}")
+        if v is not None:
+            quant[k] = v
+
+    # risk (from RiskManager runtime values)
+    if _engine_ref and _engine_ref._risk:
+        rm = _engine_ref._risk
+        trading["stop_loss_ratio"] = float(rm.stop_loss_ratio)
+        trading["take_profit_ratio"] = float(rm.take_profit_ratio)
+        trading["max_position_size"] = rm.max_position_size
+        trading["max_open_positions"] = rm.max_open_positions
+        trading["max_position_ratio"] = rm.max_position_ratio
+
+    # strategy params
+    if _registry_ref:
+        strats = d.setdefault("strategies", {})
+        for s in _registry_ref.all():
+            sc = strats.setdefault(s.name, {})
+            for k in vars(s):
+                if k.startswith("_") or k in ("name", "display_name", "enabled"):
+                    continue
+                v = getattr(s, k)
+                if isinstance(v, (int, float, str, bool)):
+                    sc[k] = v
+
+    try:
+        toml_path.write_text(tomlkit.dumps(doc))
+    except Exception as e:
+        return {"success": False, "error": f"TOML 쓰기 실패: {e}"}
+
+    return {"success": True}
 
 
 @router.get("/events")

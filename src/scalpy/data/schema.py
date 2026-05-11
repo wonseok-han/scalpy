@@ -89,8 +89,32 @@ class StrategyResultRow(Base):
     )
 
 
+class OhlcvRow(Base):
+    __tablename__ = "ohlcv"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        sa.Uuid, primary_key=True, default=uuid.uuid4
+    )
+    symbol: Mapped[str] = mapped_column(sa.String(20))
+    interval: Mapped[str] = mapped_column(sa.String(4), default="1d")
+    dt: Mapped[sa.DateTime] = mapped_column(sa.DateTime(timezone=True))
+    open: Mapped[int] = mapped_column(default=0)
+    high: Mapped[int] = mapped_column(default=0)
+    low: Mapped[int] = mapped_column(default=0)
+    close: Mapped[int] = mapped_column(default=0)
+    volume: Mapped[int] = mapped_column(sa.BigInteger, default=0)
+    created_at: Mapped[sa.DateTime] = mapped_column(
+        sa.DateTime(timezone=True), server_default=sa.func.now()
+    )
+
+    __table_args__ = (
+        sa.UniqueConstraint("symbol", "interval", "dt", name="uq_ohlcv_symbol_interval_dt"),
+    )
+
+
 sa.Index("idx_trades_symbol", TradeRow.symbol)
 sa.Index("idx_trades_order_date", TradeRow.order_date)
 sa.Index("idx_trades_side", TradeRow.side)
 sa.Index("idx_positions_symbol", PositionRow.symbol)
 sa.Index("idx_strategy_results_date", StrategyResultRow.date)
+sa.Index("idx_ohlcv_symbol_interval_dt", OhlcvRow.symbol, OhlcvRow.interval, OhlcvRow.dt)
