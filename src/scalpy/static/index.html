@@ -171,6 +171,18 @@ body {
 .btn-danger { border-color: rgba(239,68,68,0.3); color: var(--loss); }
 .btn-danger:hover { background: var(--loss-soft); border-color: var(--loss); }
 .btn:disabled { opacity: 0.3; cursor: not-allowed; pointer-events: none; }
+.btn.loading { opacity: 0.6; pointer-events: none; }
+.btn.loading::after { content:''; display:inline-block; width:12px; height:12px; margin-left:6px; border:2px solid transparent; border-top-color:currentColor; border-radius:50%; animation:spin .6s linear infinite; vertical-align:middle; }
+@keyframes spin { to { transform:rotate(360deg) } }
+
+/* ── Loading Overlay ── */
+.loading-overlay { position:fixed; inset:0; background:var(--bg-base); z-index:9999; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:20px; transition:opacity .4s; }
+.loading-overlay.fade-out { opacity:0; pointer-events:none; }
+.loading-brand { font-size:1.6rem; font-weight:700; color:var(--text-primary); letter-spacing:-0.02em; }
+.loading-brand span { color:var(--accent); }
+.loading-spinner { width:48px; height:48px; border:3px solid var(--bg-elevated); border-top-color:var(--accent); border-radius:50%; animation:spin .8s linear infinite; }
+.loading-text { color:var(--text-secondary); font-size:0.9rem; animation:pulse-text 1.5s ease-in-out infinite; }
+@keyframes pulse-text { 0%,100%{opacity:.5} 50%{opacity:1} }
 
 /* ── Metric Cards ── */
 .metrics-row {
@@ -507,6 +519,12 @@ tbody tr:last-child td { border-bottom: none; }
 </head>
 <body>
 
+<div id="loading-overlay" class="loading-overlay">
+  <div class="loading-brand"><span>S</span>calpy</div>
+  <div class="loading-spinner"></div>
+  <div class="loading-text">데이터 로딩 중</div>
+</div>
+
 <!-- Header -->
 <div class="header">
   <div class="header-inner">
@@ -522,9 +540,11 @@ tbody tr:last-child td { border-bottom: none; }
     </div>
     <div class="actions">
       <button id="btn-start" class="btn btn-primary" onclick="action('start')">스캘핑 시작</button>
-      <button id="btn-stop" class="btn" onclick="action('stop')" disabled>정지</button>
+      <button id="btn-stop" class="btn" onclick="stopWithConfirm()" disabled>정지</button>
       <button id="btn-rescan" class="btn" onclick="action('rescan')">스크리닝</button>
       <button id="btn-liquidate" class="btn btn-danger" onclick="if(confirm('전체 청산하시겠습니까?'))action('liquidate')">전체청산</button>
+      <button class="btn" onclick="cancelAllOrders()" style="color:var(--warning)">미체결 초기화</button>
+      <a href="/backtest" class="btn" style="text-decoration:none">백테스트</a>
     </div>
   </div>
 </div>
@@ -551,12 +571,12 @@ tbody tr:last-child td { border-bottom: none; }
     <div class="metric-card">
       <div class="metric-label">총 평가금액</div>
       <div class="metric-value" id="balance">-</div>
-      <div class="metric-sub" id="mode">-</div>
+      <div class="metric-sub" id="balance-prev">-</div>
     </div>
     <div class="metric-card">
-      <div class="metric-label">당일 손익</div>
+      <div class="metric-label">당일 실현손익</div>
       <div class="metric-value" id="daily-pnl">-</div>
-      <div class="metric-sub">Today's P&L</div>
+      <div class="metric-sub" id="daily-fees">수수료+세금: 0원</div>
     </div>
     <div class="metric-card">
       <div class="metric-label">보유 포지션</div>
@@ -650,16 +670,51 @@ tbody tr:last-child td { border-bottom: none; }
                 <th>종목</th>
                 <th class="text-right">수량</th>
                 <th class="text-right">체결가</th>
-                <th>전략</th>
+                <th class="text-right">수수료</th>
                 <th class="text-right">손익</th>
               </tr>
             </thead>
             <tbody id="trades"></tbody>
           </table>
         </div>
+        <div id="trade-pager" style="display:none;padding:8px 12px;border-top:1px solid var(--border);justify-content:center;align-items:center;gap:4px;font-size:0.8rem;color:var(--text-secondary)">
+          <button class="btn" style="padding:4px 10px;font-size:0.75rem" onclick="tradePageFirst()">«</button>
+          <button class="btn" style="padding:4px 10px;font-size:0.75rem" onclick="tradePagePrev()">‹</button>
+          <span id="trade-page-info" style="min-width:100px;text-align:center"></span>
+          <button class="btn" style="padding:4px 10px;font-size:0.75rem" onclick="tradePageNext()">›</button>
+          <button class="btn" style="padding:4px 10px;font-size:0.75rem" onclick="tradePageLast()">»</button>
+        </div>
       </div>
     </div>
 
+  </div>
+
+  <!-- Period PnL -->
+  <div class="grid-full anim-3" id="period-pnl-section" style="display:none">
+    <div class="card">
+      <div class="card-header">
+        <span class="card-title">기간손익현황</span>
+        <span class="card-badge" id="pnl-badge">0건</span>
+      </div>
+      <div class="card-body">
+        <div class="scroll-area">
+          <table>
+            <thead>
+              <tr>
+                <th>거래일</th>
+                <th>방향</th>
+                <th>종목</th>
+                <th class="text-right">수량</th>
+                <th class="text-right">체결가</th>
+                <th class="text-right">수수료+세금</th>
+                <th class="text-right">손익</th>
+              </tr>
+            </thead>
+            <tbody id="period-pnl-body"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
   </div>
 
   <!-- Screening -->
@@ -667,6 +722,7 @@ tbody tr:last-child td { border-bottom: none; }
     <div class="card">
       <div class="card-header">
         <span class="card-title">스크리닝 종목</span>
+        <button class="btn" style="padding:2px 8px;font-size:0.7rem" onclick="copyScreeningSymbols()">복사</button>
       </div>
       <div class="card-body">
         <div id="screening-symbols" class="screening-wrap">
@@ -740,9 +796,13 @@ function _updateMarketTimer() {
     const target = new Date(now); target.setHours(15, 40, 0, 0);
     remainEl.textContent = _fmtMs(target - now);
   } else {
-    labelEl.textContent = '내일 개장까지';
-    const tmr = new Date(now); tmr.setDate(tmr.getDate() + 1); tmr.setHours(9, 0, 0, 0);
-    remainEl.textContent = _fmtMs(tmr - now);
+    const next = new Date(now);
+    next.setDate(next.getDate() + 1);
+    while (next.getDay() === 0 || next.getDay() === 6) next.setDate(next.getDate() + 1);
+    next.setHours(9, 0, 0, 0);
+    const daysAway = Math.round((next - new Date(now.getFullYear(), now.getMonth(), now.getDate())) / 86400000);
+    labelEl.textContent = daysAway <= 1 ? '내일 개장까지' : '월요일 개장까지';
+    remainEl.textContent = _fmtMs(next - now);
   }
 }
 
@@ -766,7 +826,7 @@ let _names={};
 let _strats={};
 let _stratEnabled={};
 const _systemLabels={'synced':'기존 보유','manual':'수동 매매','unknown':'알 수 없음'};
-function stratLabel(key){return _strats[key]||_systemLabels[key]||key}
+function stratLabel(key){if(!key)return'-';return _strats[key]||_systemLabels[key]||key}
 
 async function toggleStrategy(name){
   try{
@@ -796,30 +856,93 @@ function renderStrategies(){
   }
 }
 
-function applyState(d){
-  updateStatus(d.status);
-  updatePositions(d.positions);
-  updateTrades(d.trades||[]);
-  updateScreening(d.screening);
+let _lastTradeCount=0;
+function applySseState(d){
+  if(d.status){
+    updateStatus(d.status);
+    const tc=d.status.trade_count||0;
+    if(tc!==_lastTradeCount){_lastTradeCount=tc;loadTrades();}
+  }
+  if(d.positions) updatePositions(d.positions);
+  if(d.screening) updateScreening(d.screening);
 }
 
 async function loadInitial(){
+  const overlay=document.getElementById('loading-overlay');
   try{
-    const d=await fetch('/api/dashboard').then(r=>r.json());
-    applyState(d);
+    const [status,positions,screening,signals]=await Promise.all([
+      fetch('/api/status').then(r=>r.json()),
+      fetch('/api/positions').then(r=>r.json()),
+      fetch('/api/screening').then(r=>r.json()),
+      fetch('/api/signals').then(r=>r.json()),
+    ]);
+    updateStatus(status);
+    updatePositions(positions);
+    updateScreening(screening);
   }catch(e){console.error('initial load failed',e)}
+  finally{window.scrollTo(0,0);overlay.classList.add('fade-out');setTimeout(()=>overlay.remove(),300);}
+  loadBalance();
+  loadTrades();
+  loadPeriodPnl();
+}
+
+async function loadBalance(){
+  try{
+    const d=await fetch('/api/balance').then(r=>r.json());
+    if(d.balance){
+      document.getElementById('balance').textContent=fmt(d.balance)+'원';
+      if(d.prev_balance&&d.prev_balance!=='0'){
+        const diff=Number(d.balance)-Number(d.prev_balance);
+        const sign=diff>=0?'+':'';
+        const prevEl=document.getElementById('balance-prev');
+        prevEl.textContent='전일 '+fmt(d.prev_balance)+'원 ('+sign+fmt(diff)+')';
+        prevEl.style.color=diff>=0?'var(--profit)':'var(--loss)';
+      }
+    }
+  }catch(e){console.error('balance load failed',e)}
+}
+
+async function loadTrades(){
+  try{
+    const trades=await fetch('/api/trades').then(r=>r.json());
+    trades.forEach(t=>{if(t.name)_names[t.symbol]=t.name;});
+    _allTrades=trades;
+    document.getElementById('trade-badge').textContent=trades.length+'건';
+    _tradePage=0;
+    renderTradePage();
+  }catch(e){console.error('trades load failed',e)}
+}
+
+async function loadPeriodPnl(){
+  try{
+    const data=await fetch('/api/period-pnl').then(r=>r.json());
+    renderPeriodPnl(data);
+  }catch(e){console.error('period-pnl load failed',e)}
 }
 
 function updateStatus(s){
   const bal=s.balance;
   const balEl=document.getElementById('balance');
   balEl.textContent=bal==='-'?'--':fmt(bal)+'원';
+  const prevEl=document.getElementById('balance-prev');
+  if(s.prev_balance&&s.prev_balance!=='0'&&bal!=='-'){
+    const diff=Number(bal)-Number(s.prev_balance);
+    const sign=diff>=0?'+':'';
+    prevEl.textContent='전일 '+fmt(s.prev_balance)+'원 ('+sign+fmt(diff)+')';
+    prevEl.style.color=diff>=0?'var(--profit)':'var(--loss)';
+  }
 
-  const pnl=Number(s.daily_pnl);
-  const pnlEl=document.getElementById('daily-pnl');
-  pnlEl.textContent=pnlSign(pnl)+'원';
-  pnlEl.className='metric-value '+(pnl>=0?'text-profit':'text-loss');
+  if(s.daily_pnl!==undefined){
+    const pnl=Number(s.daily_pnl);
+    const pnlEl=document.getElementById('daily-pnl');
+    pnlEl.textContent=pnlSign(pnl)+'원';
+    pnlEl.className='metric-value '+(pnl>=0?'text-profit':'text-loss');
+    const fees=Number(s.total_fees||0);
+    const tc=s.trade_count||0;
+    document.getElementById('daily-fees').textContent='체결 '+tc+'건 / 수수료 '+fmt(fees)+'원';
+  }
 
+  _posCount=s.position_count;
   document.getElementById('pos-count').textContent=s.position_count;
   document.getElementById('screening-count').textContent=s.screening_count;
   document.getElementById('last-tick').textContent=s.last_tick_at||'--';
@@ -828,11 +951,10 @@ function updateStatus(s){
   engineEl.textContent=s.running?'실행 중':'대기';
   engineEl.style.color=s.running?'var(--profit)':'var(--text-secondary)';
 
-  document.getElementById('mode').textContent=s.mock?'모의투자':'실거래';
-  document.getElementById('mode-chip').textContent=s.mock?'모의투자':'실거래';
+  if('mock' in s) document.getElementById('mode-chip').textContent=s.mock?'모의투자':'실거래';
   if(s.strategies&&typeof s.strategies==='object'){Object.assign(_strats,s.strategies)}
   if(s.strategy_enabled&&typeof s.strategy_enabled==='object'){Object.assign(_stratEnabled,s.strategy_enabled)}
-  renderStrategies();
+  if(s.strategies||s.strategy_enabled) renderStrategies();
   const statusEl=document.getElementById('engine-status');
   statusEl.innerHTML=s.running
     ?'<span class="pulse-dot on"></span> 스캘핑 중'
@@ -865,40 +987,88 @@ function updatePositions(list){
   }).join('');
 }
 
-let _lastTradeCount=0;
-function updateTrades(list){
+let _allTrades=[];
+let _tradePage=0;
+const _tradePageSize=10;
+
+function renderTradePage(){
   const tb=document.getElementById('trades');
-  document.getElementById('trade-badge').textContent=list.length+'건';
-  if(!list.length){
+  const pager=document.getElementById('trade-pager');
+  if(!_allTrades.length){
     tb.innerHTML='<tr><td class="empty-row" colspan="7">거래 없음</td></tr>';
-    _lastTradeCount=0;
+    pager.style.display='none';
     return;
   }
-  const newCount=list.length-_lastTradeCount;
-  if(newCount<=0 && _lastTradeCount>0) return;
-  const items=list.slice(0,100);
-  const rows=items.map((t,i)=>{
-    const pnl=t.pnl?Number(t.pnl):0;
-    const cls=i<newCount&&_lastTradeCount>0?'new-row':'';
-    return `<tr class="${cls}">
+  const total=_allTrades.length;
+  const maxPage=Math.ceil(total/_tradePageSize)-1;
+  const start=_tradePage*_tradePageSize;
+  const items=_allTrades.slice(start,start+_tradePageSize);
+  const rows=items.map(t=>{
+    const pnl=t.pnl?Number(t.pnl):null;
+    const pct=t.pnl_pct!==''&&t.pnl_pct!==undefined?Number(t.pnl_pct):null;
+    const pnlStr=pnl!==null?`<span class="${pnl>=0?'text-profit':'text-loss'}">${pnlSign(pnl)}원${pct!==null?' ('+(pct>0?'+':'')+pct.toFixed(2)+'%)':''}</span>`:'';
+    return `<tr>
       <td>${t.time}</td>
       <td><span class="side-tag ${t.side==='buy'?'buy':'sell'}">${t.side==='buy'?'BUY':'SELL'}</span></td>
-      <td>${_names[t.symbol]||t.symbol}<span class="text-sub">${t.symbol}</span></td>
+      <td>${t.name||_names[t.symbol]||t.symbol}<span class="text-sub">${t.symbol}</span></td>
       <td class="text-right">${t.quantity}</td>
       <td class="text-right">${fmt(t.price)}</td>
-      <td>${stratLabel(t.strategy)}</td>
-      <td class="text-right">${t.pnl?`<span class="pnl-chip ${pnlType(pnl)}">${pnlSign(pnl)}</span>`:'-'}</td>
+      <td class="text-right">${t.fee?fmt(t.fee)+'원':''}</td>
+      <td class="text-right">${pnlStr}</td>
     </tr>`;
   });
   tb.innerHTML=rows.join('');
-  _lastTradeCount=list.length;
+  tb.closest('.scroll-area').scrollTop=0;
+
+  if(total>_tradePageSize){
+    pager.style.display='flex';
+    document.getElementById('trade-page-info').textContent=`${start+1}-${Math.min(start+_tradePageSize,total)} / ${total}건`;
+    pager.children[0].disabled=_tradePage<=0;
+    pager.children[1].disabled=_tradePage<=0;
+    pager.children[3].disabled=_tradePage>=maxPage;
+    pager.children[4].disabled=_tradePage>=maxPage;
+  }else{
+    pager.style.display='none';
+  }
 }
 
+function tradePageFirst(){if(_tradePage>0){_tradePage=0;renderTradePage();}}
+function tradePagePrev(){if(_tradePage>0){_tradePage--;renderTradePage();}}
+function tradePageNext(){const max=Math.ceil(_allTrades.length/_tradePageSize)-1;if(_tradePage<max){_tradePage++;renderTradePage();}}
+function tradePageLast(){const max=Math.ceil(_allTrades.length/_tradePageSize)-1;if(_tradePage<max){_tradePage=max;renderTradePage();}}
+
+function renderPeriodPnl(data){
+  const section=document.getElementById('period-pnl-section');
+  const tb=document.getElementById('period-pnl-body');
+  if(!data||!data.length){
+    section.style.display='none';
+    return;
+  }
+  section.style.display='block';
+  document.getElementById('pnl-badge').textContent=data.length+'건';
+  data.forEach(t=>{if(t.name)_names[t.symbol]=t.name;});
+  tb.innerHTML=data.map(t=>{
+    const pnl=Number(t.pnl||0);
+    const cls=pnlType(pnl);
+    return `<tr>
+      <td>${t.time}</td>
+      <td><span class="side-tag ${t.side==='buy'?'buy':'sell'}">${t.side==='buy'?'BUY':'SELL'}</span></td>
+      <td>${t.name||_names[t.symbol]||t.symbol}<span class="text-sub">${t.symbol}</span></td>
+      <td class="text-right">${t.quantity}</td>
+      <td class="text-right">${fmt(t.price)}</td>
+      <td class="text-right">${t.fee?fmt(t.fee)+'원':''}</td>
+      <td class="text-right">${t.pnl?'<span class="pnl-chip '+cls+'">'+pnlSign(pnl)+'</span>':''}</td>
+    </tr>`;
+  }).join('');
+}
+
+let _screeningSymbols=[];
 function updateScreening(s){
   const el=document.getElementById('screening-symbols');
   const names=s.names||{};
   Object.assign(_names,names);
   const syms=s.symbols||[];
+  _screeningSymbols=syms;
   if(!syms.length){
     el.innerHTML='<span class="screen-empty">대기 중</span>';
     return;
@@ -906,6 +1076,11 @@ function updateScreening(s){
   el.innerHTML=syms.map(sym=>
     `<span class="screen-chip">${names[sym]||sym} <span class="code">${sym}</span></span>`
   ).join('');
+}
+function copyScreeningSymbols(){
+  if(!_screeningSymbols.length){toast('스크리닝 목록이 비어있습니다','error');return;}
+  navigator.clipboard.writeText(_screeningSymbols.join(','));
+  toast(_screeningSymbols.length+'개 종목 복사됨','success');
 }
 
 async function liquidateOne(symbol){
@@ -920,6 +1095,7 @@ async function liquidateOne(symbol){
 }
 
 const _actionLabels={start:'스캘핑 시작',stop:'스캘핑 정지',rescan:'스크리닝 완료',liquidate:'전체 청산 완료'};
+const _errorLabels={'already stopped':'이미 정지 상태입니다','stop in progress':'정지 중입니다','engine not available':'엔진이 준비되지 않았습니다'};
 function toast(msg,type){
   const el=document.createElement('div');
   el.className='toast toast-'+type;
@@ -927,21 +1103,54 @@ function toast(msg,type){
   document.body.appendChild(el);
   setTimeout(()=>el.remove(),3000);
 }
-async function action(name){
+let _posCount=0;
+async function cancelAllOrders(){
+  try{
+    const r=await fetch('/api/actions/cancel-all-orders',{method:'POST'});
+    const d=await r.json();
+    if(d.success){
+      toast(d.cancelled>0?d.cancelled+'건 미체결 주문 취소':'미체결 주문 없음','success');
+      setTimeout(()=>location.reload(),1000);
+    }else toast('실패: '+(d.error||'unknown'),'error');
+  }catch(e){toast('오류: '+e.message,'error')}
+}
+async function stopWithConfirm(){
+  const btn=document.getElementById('btn-stop');
+  const orig=btn.textContent;
+  btn.classList.add('loading');
+  btn.textContent='정지 중';
+  try{
+    await action('stop',true);
+    if(_posCount>0){
+      btn.textContent='청산 중';
+      await action('liquidate',true);
+    }
+  }finally{
+    btn.classList.remove('loading');
+    btn.textContent=orig;
+  }
+}
+
+async function action(name,silent){
+  const btnMap={start:'btn-start',rescan:'btn-rescan',liquidate:'btn-liquidate'};
+  const btn=!silent&&btnMap[name]?document.getElementById(btnMap[name]):null;
+  let orig;
+  if(btn){orig=btn.textContent;btn.classList.add('loading');btn.textContent='처리 중';}
   try{
     const r=await fetch('/api/actions/'+name,{method:'POST'});
     const text=await r.text();
     let d;
     try{d=JSON.parse(text)}catch{toast('응답 파싱 실패 ('+r.status+')','error');return}
     if(d.success){toast(_actionLabels[name]||'성공','success')}
-    else toast('실패: '+(d.error||'unknown'),'error');
+    else toast(_errorLabels[d.error]||d.error||'알 수 없는 오류','error');
   }catch(e){toast('오류: '+e.message,'error')}
+  finally{if(btn){btn.classList.remove('loading');btn.textContent=orig;}}
 }
 
 const badge=document.getElementById('conn-badge');
 const es=new EventSource('/api/events');
 es.addEventListener('state',e=>{
-  try{applyState(JSON.parse(e.data))}catch(err){console.error('state parse error',err)}
+  try{applySseState(JSON.parse(e.data))}catch(err){console.error('state parse error',err)}
 });
 es.onopen=()=>{badge.textContent='LIVE';badge.className='conn-badge conn-live'};
 es.onerror=()=>{
@@ -950,6 +1159,7 @@ es.onerror=()=>{
 };
 
 loadInitial();
+setInterval(loadTrades, 60000);
 </script>
 </body>
 </html>

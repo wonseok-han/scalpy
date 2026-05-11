@@ -72,8 +72,34 @@ def build_engine(registry: StrategyRegistry) -> tuple[TradingEngine, BaseBroker]
         take_profit_ratio=trading.get("take_profit_ratio", 0.03),
         max_position_size=trading.get("max_position_size", 100),
         max_open_positions=trading.get("max_open_positions", 3),
+        max_position_ratio=trading.get("max_position_ratio", 0.3),
     )
     return TradingEngine(broker, registry, risk), broker
+
+
+_TRADE_SYNC_INTERVAL = 60
+
+
+async def _trade_sync_loop(
+    broker: "BaseBroker",
+    trade_repo: "TradeRepository",
+    stop_event: asyncio.Event,
+) -> None:
+    while not stop_event.is_set():
+        try:
+            trades = await broker.get_trade_history()
+            if trades:
+                count = trade_repo.sync_trades(trades)
+                if count:
+                    logger.info("trade_sync.new_trades", count=count)
+        except Exception as e:
+            logger.error("trade_sync.error", error=str(e))
+
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=_TRADE_SYNC_INTERVAL)
+            break
+        except asyncio.TimeoutError:
+            pass
 
 
 async def _screening_loop(
@@ -123,6 +149,8 @@ async def _start_trading(
             broker=broker,
             max_stocks=screening_cfg.get("max_stocks", 5),
             min_change_rate=screening_cfg.get("min_change_rate", 2.0),
+            max_change_rate=screening_cfg.get("max_change_rate", 8.0),
+            min_change_rate_lower=screening_cfg.get("min_change_rate_lower", -2.0),
             min_volume=screening_cfg.get("min_volume", 100_000),
         )
         held = [p.symbol for p in engine.positions.all()]
@@ -147,21 +175,34 @@ async def run() -> None:
     registry = build_registry()
     engine, broker = build_engine(registry)
     mock = settings.get("mock", True)
+    hts_id = settings.get("kis_hts_id", "")
     stream = MarketDataStream(
         app_key=settings.get("kis_app_key", ""),
         app_secret=settings.get("kis_app_secret", ""),
         mock=mock,
+        hts_id=hts_id,
     )
 
     stream.on_tick(engine.on_tick)
     stream.on_orderbook(engine.on_orderbook)
+    stream.on_fill(engine.on_fill_notice)
+    stream.on_vi(engine.on_vi_event)
 
     bus = EventBus()
     engine.set_event_bus(bus)
 
+    db_url = settings.get("database_url", "")
+    if db_url:
+        from scalpy.data.repository import TradeRepository
+        trade_repo = TradeRepository(db_url)
+        trade_repo.create_tables()
+    else:
+        trade_repo = None
+
     await broker.connect()
     await engine.sync_positions()
     await engine.get_cached_balance()
+    engine.start_sync_loop()
 
     stop_event = asyncio.Event()
     dashboard_task = None
@@ -180,6 +221,8 @@ async def run() -> None:
             broker=broker,
             max_stocks=screening_cfg.get("max_stocks", 5),
             min_change_rate=screening_cfg.get("min_change_rate", 2.0),
+            max_change_rate=screening_cfg.get("max_change_rate", 8.0),
+            min_change_rate_lower=screening_cfg.get("min_change_rate_lower", -2.0),
             min_volume=screening_cfg.get("min_volume", 100_000),
         )
 
@@ -200,6 +243,7 @@ async def run() -> None:
             port=dashboard_cfg.get("port", 8080),
             screener=screener_ref, stream=stream,
             registry=registry,
+            trade_repo=trade_repo,
         )
 
     # Telegram
@@ -213,6 +257,10 @@ async def run() -> None:
         )
         notifier.register_handlers(bus)
         logger.info("scalpy.telegram_enabled")
+
+    if trade_repo:
+        asyncio.create_task(_trade_sync_loop(broker, trade_repo, stop_event))
+        logger.info("scalpy.trade_sync_started", interval=_TRADE_SYNC_INTERVAL)
 
     if auto_start:
         await _start_trading(engine, broker, stream, bus, stop_event)
@@ -239,16 +287,22 @@ async def run() -> None:
     await stop_event.wait()
 
     async def _shutdown() -> None:
-        await stream.stop()
-        await engine.stop()
-
         if dashboard_task is not None:
+            sse = getattr(dashboard_task, '_sse', None)
+            if sse:
+                sse.stop()
             server = getattr(dashboard_task, '_uvicorn_server', None)
             if server:
                 server.should_exit = True
-            dashboard_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await dashboard_task
+                try:
+                    await asyncio.wait_for(dashboard_task, timeout=3)
+                except (asyncio.TimeoutError, asyncio.CancelledError):
+                    dashboard_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await dashboard_task
+
+        await stream.stop()
+        await engine.stop()
 
     try:
         await asyncio.wait_for(_shutdown(), timeout=5)

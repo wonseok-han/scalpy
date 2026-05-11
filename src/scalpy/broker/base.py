@@ -4,9 +4,18 @@ from decimal import Decimal
 from typing import Any
 
 from scalpy.core.models import Order, Position
+from scalpy.trading.position import PositionManager
 
 
 class BaseBroker(ABC):
+    def __init__(self) -> None:
+        self._pm = PositionManager()
+        self._position_names: dict[str, str] = {}
+
+    @property
+    def positions(self) -> PositionManager:
+        return self._pm
+
     @abstractmethod
     async def connect(self) -> None: ...
 
@@ -20,7 +29,9 @@ class BaseBroker(ABC):
     async def cancel_order(self, order_id: str) -> bool: ...
 
     @abstractmethod
-    async def get_positions(self) -> list[Position]: ...
+    async def sync_positions(self) -> int:
+        """Fetch positions from external source and update internal cache."""
+        ...
 
     @abstractmethod
     async def get_balance(self) -> Decimal: ...
@@ -28,6 +39,10 @@ class BaseBroker(ABC):
     @abstractmethod
     async def get_trade_history(self) -> list[dict[str, Any]]:
         """당일 체결내역 조회."""
+
+    async def get_period_pnl(self) -> list[dict[str, Any]]:
+        """기간손익현황 조회 (실거래만)."""
+        return []
 
     @abstractmethod
     async def get_top_volume_stocks(self, count: int = 30) -> list[dict[str, Any]]:

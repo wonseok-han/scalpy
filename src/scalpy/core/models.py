@@ -29,6 +29,7 @@ class Order:
     status: OrderStatus = OrderStatus.PENDING
     created_at: datetime = field(default_factory=datetime.now)
     filled_at: datetime | None = None
+    reject_reason: str = ""
 
 
 @dataclass

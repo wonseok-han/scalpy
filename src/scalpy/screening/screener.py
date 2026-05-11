@@ -6,6 +6,8 @@ from scalpy.broker.base import BaseBroker
 
 logger = structlog.get_logger()
 
+_ETF_PREFIXES = ("KODEX", "TIGER", "KBSTAR", "RISE", "ARIRANG", "SOL", "ACE", "HANARO", "KOSEF", "PLUS")
+
 
 class StockScreener:
     def __init__(
@@ -13,11 +15,15 @@ class StockScreener:
         broker: BaseBroker,
         max_stocks: int = 5,
         min_change_rate: float = 2.0,
+        max_change_rate: float = 8.0,
+        min_change_rate_lower: float = -2.0,
         min_volume: int = 100_000,
     ) -> None:
         self._broker = broker
         self._max_stocks = max_stocks
         self._min_change_rate = min_change_rate
+        self._max_change_rate = max_change_rate
+        self._min_change_rate_lower = min_change_rate_lower
         self._min_volume = min_volume
         self.symbol_names: dict[str, str] = {}
 
@@ -55,9 +61,22 @@ class StockScreener:
     def _filter(self, stocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
         result = []
         for s in stocks:
+            code = s.get("symbol", "")
+            if code and not code[0].isdigit():
+                continue
+            if code.startswith("9"):
+                continue
+            name = s.get("name", "")
+            if any(name.startswith(p) for p in _ETF_PREFIXES):
+                continue
             if s.get("volume", 0) < self._min_volume:
                 continue
-            if abs(s.get("change_rate", 0.0)) < self._min_change_rate:
+            cr = s.get("change_rate", 0.0)
+            if cr < self._min_change_rate_lower:
+                continue
+            if cr > self._max_change_rate:
+                continue
+            if abs(cr) < self._min_change_rate:
                 continue
             result.append(s)
         return result
@@ -68,11 +87,13 @@ class StockScreener:
 
         max_vol = max(s["volume"] for s in stocks)
         max_cr = max(abs(s.get("change_rate", 0)) for s in stocks)
+        max_vt = max(s.get("volume_turnover", 0) for s in stocks) or 1
 
         for s in stocks:
             norm_vol = s["volume"] / max_vol if max_vol > 0 else 0
             norm_cr = abs(s.get("change_rate", 0)) / max_cr if max_cr > 0 else 0
-            s["score"] = norm_vol * 0.6 + norm_cr * 0.4
+            norm_vt = s.get("volume_turnover", 0) / max_vt
+            s["score"] = norm_vol * 0.4 + norm_cr * 0.3 + norm_vt * 0.3
 
         stocks.sort(key=lambda s: s["score"], reverse=True)
         return [s["symbol"] for s in stocks]

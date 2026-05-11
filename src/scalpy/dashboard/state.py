@@ -1,7 +1,6 @@
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime
-from decimal import Decimal
 from typing import Any
 
 from scalpy.events.bus import EventBus
@@ -15,7 +14,6 @@ class TradeRecord:
     quantity: int
     price: str
     strategy: str
-    pnl: str = ""
 
 
 @dataclass
@@ -37,12 +35,12 @@ class DashboardState:
     next_scan_at: str = ""
     engine_running: bool = False
     last_tick_at: str = ""
-    daily_pnl: Decimal = Decimal("0")
+    last_api_balance: str = "-"
+    last_prev_balance: str = ""
 
     def register_handlers(self, bus: EventBus) -> None:
         bus.subscribe("order.filled", self._on_order_filled)
         bus.subscribe("signal.generated", self._on_signal)
-        bus.subscribe("position.closed", self._on_position_closed)
         bus.subscribe("engine.started", self._on_engine_started)
         bus.subscribe("engine.stopped", self._on_engine_stopped)
         bus.subscribe("screening.completed", self._on_screening)
@@ -68,15 +66,6 @@ class DashboardState:
             confidence=data.get("confidence", 0.0),
         ))
 
-    def _on_position_closed(self, data: dict[str, Any]) -> None:
-        symbol = data.get("symbol", "")
-        pnl = Decimal(str(data.get("pnl", 0)))
-        self.daily_pnl += pnl
-        for trade in self.trades:
-            if trade.symbol == symbol and trade.side == "sell" and not trade.pnl:
-                trade.pnl = str(pnl)
-                break
-
     def _on_engine_started(self, data: dict[str, Any]) -> None:
         self.engine_running = True
 
@@ -101,7 +90,6 @@ class DashboardState:
                 "quantity": t.quantity,
                 "price": t.price,
                 "strategy": t.strategy,
-                "pnl": t.pnl,
             }
             for t in self.trades
         ]

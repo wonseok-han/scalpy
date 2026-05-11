@@ -28,8 +28,14 @@ class SSEManager:
     def __init__(self, bus: EventBus) -> None:
         self._bus = bus
         self._queues: list[asyncio.Queue[str]] = []
+        self._stopped = False
         for event in SSE_EVENTS:
             bus.subscribe(event, self._make_handler(event))
+
+    def stop(self) -> None:
+        self._stopped = True
+        for q in self._queues:
+            q.put_nowait("")
 
     def _make_handler(self, event_type: str) -> Any:
         sse_name = _EVENT_MAP.get(event_type, event_type)
@@ -52,11 +58,14 @@ class SSEManager:
         q: asyncio.Queue[str] = asyncio.Queue()
         self._queues.append(q)
         try:
-            while True:
+            while not self._stopped:
                 msg = await q.get()
+                if not msg or self._stopped:
+                    break
                 yield msg
         finally:
-            self._queues.remove(q)
+            if q in self._queues:
+                self._queues.remove(q)
 
 
 def _serialize(data: dict[str, Any]) -> dict[str, Any]:

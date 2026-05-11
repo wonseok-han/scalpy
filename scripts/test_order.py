@@ -44,7 +44,8 @@ async def main() -> None:
     print(f"매수 후 예수금: {balance:,}원")
     await asyncio.sleep(DELAY)
 
-    positions = await broker.get_positions()
+    await broker.sync_positions()
+    positions = broker.positions.all()
     print(f"보유 종목: {len(positions)}개")
     for p in positions:
         print(f"  {p.symbol} | {p.quantity}주 | 평단 {p.avg_price:,}원 | 현재가 {p.current_price:,}원")

@@ -41,6 +41,7 @@ class BollingerStrategy(BaseStrategy):
         return lower, mid, upper
 
     async def on_tick(self, symbol: str, price: Decimal, volume: int) -> Signal | None:
+        self._advance_tick(symbol)
         prices = self._get_prices(symbol)
         prices.append(price)
 

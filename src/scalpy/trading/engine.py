@@ -1,8 +1,10 @@
+import asyncio
 import time
 import zoneinfo
 from datetime import datetime
 from datetime import time as dt_time
 from decimal import Decimal
+from typing import Any
 
 import structlog
 
@@ -18,7 +20,12 @@ from scalpy.trading.risk import RiskManager
 logger = structlog.get_logger()
 
 _BALANCE_CACHE_TTL = 10
+_SYNC_INTERVAL = 10
+_RISK_CHECK_INTERVAL = 10
 _MIN_CONFIDENCE = 0.5
+_REJECTED_COOLDOWN = 60
+_CLOSE_COOLDOWN = 300
+_MIN_PROFIT_RATIO = Decimal("0.003")
 _KST = zoneinfo.ZoneInfo("Asia/Seoul")
 _CUTOFF_BUY = dt_time(15, 15)
 _CUTOFF_CLOSE = dt_time(15, 18)
@@ -35,20 +42,27 @@ class TradingEngine:
         self._broker = broker
         self._registry = registry
         self._risk = risk
-        self._positions = PositionManager()
         self._orders = OrderManager(broker)
         self._running = False
         self._bus: EventBus | None = None
         self._cached_balance: Decimal = Decimal("0")
         self._balance_fetched_at: float = 0
         self._market_close_done = False
+        self._last_sync_at: float = 0
+        self._rejected_symbols: dict[str, float] = {}
+        self._closed_symbols: dict[str, float] = {}
+        self._untradeable: set[str] = set()
+        self._risk_loop_task: asyncio.Task[None] | None = None
+        self._sync_loop_task: asyncio.Task[None] | None = None
+        self._sync_running = False
+        self._active_symbols: set[str] = set()
 
     def set_event_bus(self, bus: EventBus) -> None:
         self._bus = bus
 
     @property
     def positions(self) -> PositionManager:
-        return self._positions
+        return self._broker.positions
 
     @property
     def orders(self) -> OrderManager:
@@ -65,45 +79,105 @@ class TradingEngine:
         return self._cached_balance
 
     async def sync_positions(self) -> int:
-        broker_positions = await self._broker.get_positions()
-        for pos in broker_positions:
-            if self._positions.get(pos.symbol) is None:
-                pos.unrealized_pnl = (pos.current_price - pos.avg_price) * pos.quantity
-                self._positions._positions[pos.symbol] = pos
-        count = len(broker_positions)
-        if count:
-            logger.info("engine.positions_synced", count=count)
+        try:
+            count = await self._broker.sync_positions()
+        except Exception as e:
+            logger.warning("engine.sync_failed", error=str(e))
+            return 0
+
+        now = time.monotonic()
+        skip = self._untradeable | {
+            s for s, t in self._rejected_symbols.items() if now - t < _REJECTED_COOLDOWN
+        }
+        for sym in skip:
+            self.positions.remove(sym)
+
+        self._last_sync_at = time.monotonic()
+
+        if self._running:
+            for pos in self.positions.all():
+                await self._check_risk(pos.symbol)
+
         return count
 
     async def update_symbols(self, symbols: list[str]) -> None:
-        held = {p.symbol for p in self._positions.all()}
+        held = {p.symbol for p in self.positions.all()}
         self._active_symbols = set(symbols) | held
         logger.info("engine.symbols_updated", symbols=list(self._active_symbols))
 
     async def start(self) -> None:
         await self._broker.connect()
         self._running = True
+        self.start_background_loops()
         logger.info("engine.started")
         if self._bus:
             await self._bus.emit("engine.started")
 
     async def stop(self) -> None:
         self._running = False
+        self.stop_background_loops()
+        self.stop_sync_loop()
         await self._broker.disconnect()
         logger.info("engine.stopped")
         if self._bus:
             await self._bus.emit("engine.stopped")
 
+    def start_sync_loop(self) -> None:
+        self._sync_running = True
+        if not self._sync_loop_task or self._sync_loop_task.done():
+            self._sync_loop_task = asyncio.create_task(self._sync_loop())
+
+    def stop_sync_loop(self) -> None:
+        self._sync_running = False
+        if self._sync_loop_task and not self._sync_loop_task.done():
+            self._sync_loop_task.cancel()
+        self._sync_loop_task = None
+
+    def start_background_loops(self) -> None:
+        if not self._risk_loop_task or self._risk_loop_task.done():
+            self._risk_loop_task = asyncio.create_task(self._risk_check_loop())
+        self.start_sync_loop()
+
+    def stop_background_loops(self) -> None:
+        if self._risk_loop_task and not self._risk_loop_task.done():
+            self._risk_loop_task.cancel()
+        self._risk_loop_task = None
+
+    async def _risk_check_loop(self) -> None:
+        while self._running:
+            await asyncio.sleep(_RISK_CHECK_INTERVAL)
+            if not self._running:
+                break
+            for pos in self.positions.all():
+                await self._check_risk(pos.symbol)
+
+    async def _sync_loop(self) -> None:
+        while self._sync_running:
+            await asyncio.sleep(_SYNC_INTERVAL)
+            if not self._sync_running:
+                break
+            try:
+                await self.sync_positions()
+                if self._bus:
+                    await self._bus.emit("position.updated", {})
+            except Exception as e:
+                logger.warning("engine.sync_loop_failed", error=str(e))
+
     async def on_tick(self, symbol: str, price: Decimal, volume: int) -> None:
         if not self._running:
             return
 
-        self._positions.update_price(symbol, price)
+        self.positions.update_price(symbol, price)
         if self._bus:
-            await self._bus.emit("tick.received", {"symbol": symbol, "price": str(price), "volume": volume})
-            pos = self._positions.get(symbol)
+            await self._bus.emit(
+                "tick.received",
+                {"symbol": symbol, "price": str(price), "volume": volume},
+            )
+            pos = self.positions.get(symbol)
             if pos:
-                await self._bus.emit("position.updated", {"symbol": symbol, "current_price": str(price)})
+                await self._bus.emit(
+                    "position.updated", {"symbol": symbol, "current_price": str(price)}
+                )
         await self._check_risk(symbol)
         await self._check_market_close()
 
@@ -126,6 +200,73 @@ class TradingEngine:
             if signal is not None:
                 await self._process_signal(signal)
 
+    async def on_fill_notice(self, data: dict[str, Any]) -> None:
+        symbol = data["symbol"]
+        if data.get("is_rejected"):
+            self._rejected_symbols[symbol] = time.monotonic()
+            logger.warning(
+                "engine.ws_order_rejected", symbol=symbol, order_no=data.get("order_no")
+            )
+            return
+        if not data.get("is_fill"):
+            return
+
+        side = data["side"]
+        qty = data["quantity"]
+        price = Decimal(str(data["price"]))
+        strategy = "ws_fill"
+
+        if side == "buy":
+            pos = self.positions.get(symbol)
+            if pos:
+                strategy = pos.strategy
+                total_qty = pos.quantity + qty
+                pos.avg_price = (pos.avg_price * pos.quantity + price * qty) / total_qty
+                pos.quantity = total_qty
+                pos.current_price = price
+            else:
+                self.positions._positions[symbol] = Position(
+                    symbol=symbol,
+                    side=Side.BUY,
+                    quantity=qty,
+                    avg_price=price,
+                    current_price=price,
+                    strategy="ws_fill",
+                )
+            logger.info("engine.ws_fill_buy", symbol=symbol, qty=qty, price=str(price))
+        else:
+            pos = self.positions.get(symbol)
+            if pos:
+                strategy = pos.strategy
+                remaining = pos.quantity - qty
+                if remaining <= 0:
+                    self.positions.remove(symbol)
+                else:
+                    pos.quantity = remaining
+                    pos.current_price = price
+            logger.info("engine.ws_fill_sell", symbol=symbol, qty=qty, price=str(price))
+
+        if self._bus:
+            await self._bus.emit(
+                "order.filled",
+                {
+                    "symbol": symbol,
+                    "side": side,
+                    "price": str(price),
+                    "qty": qty,
+                    "strategy": strategy,
+                },
+            )
+
+    async def on_vi_event(self, symbol: str, triggered: bool) -> None:
+        if triggered:
+            self._untradeable.add(symbol)
+            pos = self.positions.get(symbol)
+            if pos:
+                logger.warning("engine.vi_hold", symbol=symbol)
+        else:
+            self._untradeable.discard(symbol)
+
     async def _process_signal(self, signal: Signal) -> None:
         if not self._running:
             return
@@ -134,28 +275,38 @@ class TradingEngine:
         if self._orders.has_pending_for(signal.symbol):
             return
 
+        if signal.symbol in self._untradeable:
+            return
+
         if signal.side == Side.BUY:
+            closed_at = self._closed_symbols.get(signal.symbol)
+            if closed_at and time.monotonic() - closed_at < _CLOSE_COOLDOWN:
+                return
+            rejected_at = self._rejected_symbols.get(signal.symbol)
+            if rejected_at and time.monotonic() - rejected_at < _REJECTED_COOLDOWN:
+                return
             now_kst = datetime.now(_KST).time()
             if _CUTOFF_BUY <= now_kst <= _MARKET_END:
                 logger.info("engine.buy_blocked_market_closing", symbol=signal.symbol)
                 return
-            if self._positions.get(signal.symbol) is not None:
+            if self.positions.get(signal.symbol) is not None:
                 return
-            if len(self._positions.all()) >= self._risk.max_open_positions:
+            if len(self.positions.all()) >= self._risk.max_open_positions:
                 return
 
         balance = await self.get_cached_balance()
         qty = self._risk.get_max_position_size(signal.symbol, balance, signal.price)
 
-        sell_pos_avg: Decimal | None = None
         if signal.side == Side.SELL:
-            pos = self._positions.get(signal.symbol)
+            pos = self.positions.get(signal.symbol)
             if pos is None or pos.quantity == 0:
                 return
             if pos.strategy != "synced" and pos.strategy != signal.strategy:
                 return
+            gain = (pos.current_price - pos.avg_price) / pos.avg_price if pos.avg_price > 0 else Decimal("0")
+            if gain < _MIN_PROFIT_RATIO:
+                return
             qty = pos.quantity
-            sell_pos_avg = pos.avg_price
 
         if qty <= 0:
             return
@@ -166,38 +317,60 @@ class TradingEngine:
             return
 
         if self._bus:
-            await self._bus.emit("signal.generated", {
-                "symbol": signal.symbol, "side": signal.side.value,
-                "strategy": signal.strategy, "price": str(signal.price),
-                "confidence": signal.confidence,
-            })
+            await self._bus.emit(
+                "signal.generated",
+                {
+                    "symbol": signal.symbol,
+                    "side": signal.side.value,
+                    "strategy": signal.strategy,
+                    "price": str(signal.price),
+                    "confidence": signal.confidence,
+                },
+            )
 
         result = await self._orders.submit(order)
-        if result.status == OrderStatus.REJECTED and signal.side == Side.SELL:
-            self._positions.remove(signal.symbol)
-            logger.info("engine.stale_position_removed", symbol=signal.symbol)
+        if result.status == OrderStatus.REJECTED:
+            if "매매불가" in result.reject_reason or "잔고" in result.reject_reason:
+                self._untradeable.add(signal.symbol)
+                logger.warning("engine.untradeable", symbol=signal.symbol)
+            else:
+                self._rejected_symbols[signal.symbol] = time.monotonic()
+            if signal.side == Side.SELL:
+                self.positions.remove(signal.symbol)
+                logger.info("engine.stale_position_removed", symbol=signal.symbol)
             return
         if result.status == OrderStatus.FILLED:
-            self._positions.update_on_fill(result)
-            self._cached_balance = await self._broker.get_balance()
-            self._balance_fetched_at = time.monotonic()
+            self.positions.update_on_fill(result)
             if self._bus:
-                await self._bus.emit("order.filled", {
-                    "symbol": result.symbol, "side": result.side.value,
-                    "price": str(result.price), "qty": result.quantity,
-                    "strategy": result.strategy,
-                })
+                await self._bus.emit(
+                    "order.filled",
+                    {
+                        "symbol": result.symbol,
+                        "side": result.side.value,
+                        "price": str(result.price),
+                        "qty": result.quantity,
+                        "strategy": result.strategy,
+                    },
+                )
                 if result.side == Side.BUY:
-                    await self._bus.emit("position.opened", {
-                        "symbol": result.symbol, "qty": result.quantity,
-                        "avg_price": str(result.price), "strategy": result.strategy,
-                    })
-                elif result.side == Side.SELL and sell_pos_avg is not None:
-                    pnl = (result.price - sell_pos_avg) * result.quantity
-                    await self._bus.emit("position.closed", {
-                        "symbol": result.symbol, "qty": result.quantity,
-                        "pnl": str(pnl), "reason": "signal",
-                    })
+                    await self._bus.emit(
+                        "position.opened",
+                        {
+                            "symbol": result.symbol,
+                            "qty": result.quantity,
+                            "avg_price": str(result.price),
+                            "strategy": result.strategy,
+                        },
+                    )
+                elif result.side == Side.SELL:
+                    await self._bus.emit(
+                        "position.closed",
+                        {
+                            "symbol": result.symbol,
+                            "qty": result.quantity,
+                            "reason": "signal",
+                        },
+                    )
 
     async def _check_market_close(self) -> None:
         now_kst = datetime.now(_KST).time()
@@ -206,16 +379,21 @@ class TradingEngine:
             return
         if self._market_close_done:
             return
-        positions = list(self._positions.all())
+        positions = list(self.positions.all())
         if not positions:
             return
         logger.warning("engine.market_close_liquidation", count=len(positions))
         for pos in positions:
             await self._force_close(pos, reason="market_close")
+        self._running = False
+        self.stop_background_loops()
         self._market_close_done = True
+        logger.info("engine.auto_stopped_market_close")
+        if self._bus:
+            await self._bus.emit("engine.stopped")
 
     async def _check_risk(self, symbol: str) -> None:
-        pos = self._positions.get(symbol)
+        pos = self.positions.get(symbol)
         if pos is None:
             return
 
@@ -236,25 +414,51 @@ class TradingEngine:
         )
         order = self._orders.signal_to_order(signal, pos.quantity)
         result = await self._orders.submit(order)
+        if result.status == OrderStatus.REJECTED:
+            self.positions.remove(pos.symbol)
+            if "잔고" in result.reject_reason or "매매불가" in result.reject_reason:
+                self._untradeable.add(pos.symbol)
+                logger.warning(
+                    "engine.ghost_position_blocked", symbol=pos.symbol, reason=reason
+                )
+            else:
+                self._rejected_symbols[pos.symbol] = time.monotonic()
+                logger.warning(
+                    "engine.force_close_rejected", symbol=pos.symbol, reason=reason
+                )
+            return
         if result.status == OrderStatus.FILLED:
-            pnl = (result.price - pos.avg_price) * pos.quantity
-            self._positions.update_on_fill(result)
-            self._cached_balance = await self._broker.get_balance()
-            self._balance_fetched_at = time.monotonic()
-            logger.info("engine.position_force_closed", symbol=pos.symbol, reason=reason)
+            self.positions.update_on_fill(result)
+            self._closed_symbols[pos.symbol] = time.monotonic()
+            logger.info(
+                "engine.position_force_closed", symbol=pos.symbol, reason=reason
+            )
             if self._bus:
-                await self._bus.emit("signal.generated", {
-                    "symbol": pos.symbol, "side": "sell",
-                    "strategy": reason or pos.strategy,
-                    "price": str(pos.current_price),
-                    "confidence": 1.0,
-                })
-                await self._bus.emit("order.filled", {
-                    "symbol": result.symbol, "side": result.side.value,
-                    "price": str(result.price), "qty": result.quantity,
-                    "strategy": reason or result.strategy,
-                })
-                await self._bus.emit("position.closed", {
-                    "symbol": pos.symbol, "qty": pos.quantity,
-                    "pnl": str(pnl), "reason": reason,
-                })
+                await self._bus.emit(
+                    "signal.generated",
+                    {
+                        "symbol": pos.symbol,
+                        "side": "sell",
+                        "strategy": reason or pos.strategy,
+                        "price": str(pos.current_price),
+                        "confidence": 1.0,
+                    },
+                )
+                await self._bus.emit(
+                    "order.filled",
+                    {
+                        "symbol": result.symbol,
+                        "side": result.side.value,
+                        "price": str(result.price),
+                        "qty": result.quantity,
+                        "strategy": reason or result.strategy,
+                    },
+                )
+                await self._bus.emit(
+                    "position.closed",
+                    {
+                        "symbol": pos.symbol,
+                        "qty": pos.quantity,
+                        "reason": reason,
+                    },
+                )

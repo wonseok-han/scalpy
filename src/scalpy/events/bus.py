@@ -27,4 +27,4 @@ class EventBus:
                 if asyncio.iscoroutine(result):
                     asyncio.create_task(result)
             except Exception as e:
-                logger.error("event_bus.handler_error", event=event_type, error=str(e))
+                logger.error("event_bus.handler_error", event_type=event_type, error=str(e))

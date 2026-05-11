@@ -2,7 +2,7 @@ import asyncio
 import json
 import time
 from collections.abc import Callable
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -12,7 +12,7 @@ import structlog
 
 from scalpy.broker.base import BaseBroker
 from scalpy.config import settings
-from scalpy.core.enums import OrderStatus, Side
+from scalpy.core.enums import OrderStatus, OrderType, Side
 from scalpy.core.exceptions import AuthenticationError
 from scalpy.core.models import Order, Position
 
@@ -47,21 +47,26 @@ class KISBroker(BaseBroker):
     def __init__(
         self, app_key: str, app_secret: str, account_no: str, *, mock: bool = True
     ) -> None:
+        super().__init__()
         self._app_key = app_key
         self._app_secret = app_secret
         self._account_no = account_no
+        self._cano = account_no[:8]
+        self._acnt_prdt_cd = account_no[8:].lstrip("-") or "01"
         self._mock = mock
         self._connected = False
         self._api: Any = None
-        self._daily_pnl: Decimal = Decimal("0")
         self._last_api_call: float = 0
         self._api_lock = asyncio.Lock()
+        self._last_ccld_first_page: int = -1
+        self._last_ccld_has_next: bool = False
 
     async def _throttle(self) -> None:
+        gap = 1.05 if self._mock else 0.15
         async with self._api_lock:
             elapsed = time.monotonic() - self._last_api_call
-            if elapsed < 0.3:
-                await asyncio.sleep(0.3 - elapsed)
+            if elapsed < gap:
+                await asyncio.sleep(gap - elapsed)
             self._last_api_call = time.monotonic()
 
     async def connect(self) -> None:
@@ -71,13 +76,11 @@ class KISBroker(BaseBroker):
             raise AuthenticationError("pykis 패키지가 설치되지 않았습니다") from e
 
         domain = DomainInfo("virtual" if self._mock else "real")
-        account_code = self._account_no[:8]
-        product_code = self._account_no[8:].lstrip("-")
 
         self._api = Api(
             key_info={"appkey": self._app_key, "appsecret": self._app_secret},
             domain_info=domain,
-            account_info={"account_code": account_code, "product_code": product_code},
+            account_info={"account_code": self._cano, "product_code": self._acnt_prdt_cd},
         )
         self._load_or_create_token()
         self._connected = True
@@ -88,12 +91,16 @@ class KISBroker(BaseBroker):
         if _TOKEN_PATH.exists():
             data = json.loads(_TOKEN_PATH.read_text())
             expires = datetime.fromisoformat(data["valid_until"])
-            if expires > datetime.now():
+            if expires > datetime.now() + timedelta(minutes=5):
                 self._api.token.value = data["value"]
                 self._api.token.valid_until = expires
-                logger.info("kis_broker.token_cached")
+                logger.info("kis_broker.token_cached", expires=expires.isoformat())
                 return
+            logger.info("kis_broker.token_expiring_soon", expires=expires.isoformat())
 
+        self._refresh_token()
+
+    def _refresh_token(self) -> None:
         self._api.create_token()
         _TOKEN_PATH.write_text(json.dumps({
             "value": self._api.token.value,
@@ -113,7 +120,10 @@ class KISBroker(BaseBroker):
 
         await self._throttle()
         try:
-            price = _round_to_tick(int(order.price))
+            if order.order_type == OrderType.MARKET:
+                price = 0
+            else:
+                price = _round_to_tick(int(order.price))
             if order.side == Side.BUY:
                 self._api.buy_kr_stock(order.symbol, order.quantity, price)
             else:
@@ -130,6 +140,7 @@ class KISBroker(BaseBroker):
             )
         except Exception as e:
             order.status = OrderStatus.REJECTED
+            order.reject_reason = str(e)
             logger.warning("kis_broker.order_rejected", symbol=order.symbol, error=str(e))
 
         return order
@@ -146,46 +157,341 @@ class KISBroker(BaseBroker):
             logger.error("kis_broker.cancel_failed", order_id=order_id, error=str(e))
             return False
 
-    async def get_positions(self) -> list[Position]:
+    async def cancel_all_orders(self) -> int:
         if not self._connected or self._api is None:
-            return []
-
-        df = self._api.get_kr_stock_balance()
-        self._position_names: dict[str, str] = {}
-        positions: list[Position] = []
-        for symbol_code, row in df.iterrows():
-            qty = int(row.get("보유수량", 0))
-            if qty == 0:
-                continue
-            code = str(symbol_code)
-            name = str(row.get("종목명", code))
-            self._position_names[code] = name
-            positions.append(
-                Position(
-                    symbol=code,
-                    side=Side.BUY,
-                    quantity=qty,
-                    avg_price=Decimal(str(row.get("매입단가", 0))),
-                    current_price=Decimal(str(row.get("현재가", 0))),
-                    strategy="synced",
-                    opened_at=datetime.now(),
-                )
+            return 0
+        await self._throttle()
+        try:
+            df = await asyncio.to_thread(
+                self._retry_on_token_expired, self._api.get_kr_orders
             )
-        return positions
+            if df.empty:
+                return 0
+            await asyncio.to_thread(self._api.cancel_all_kr_orders)
+            count = len(df)
+            logger.info("kis_broker.all_orders_cancelled", count=count)
+            return count
+        except Exception as e:
+            logger.error("kis_broker.cancel_all_failed", error=str(e))
+            return 0
+
+    def _is_token_expired_error(self, e: Exception) -> bool:
+        return "만료된 token" in str(e)
+
+    def _retry_on_token_expired(self, func):
+        try:
+            return func()
+        except RuntimeError as e:
+            if self._is_token_expired_error(e):
+                logger.warning("kis_broker.token_expired_runtime", error=str(e))
+                self._refresh_token()
+                return func()
+            raise
+
+    def _retry_on_token_expired_resp(self, func):
+        resp = func()
+        if resp.status_code >= 400:
+            try:
+                body = resp.json()
+            except Exception:
+                logger.error("kis_broker.api_error", status=resp.status_code, body=resp.text[:500])
+                resp.raise_for_status()
+                return resp
+            msg = body.get("msg1", "")
+            msg_cd = body.get("msg_cd", "")
+            if resp.status_code == 500 and ("token" in msg.lower() or msg_cd == "EGW00121"):
+                logger.warning("kis_broker.token_invalid_rest", msg=msg)
+                self._refresh_token()
+                time.sleep(1)
+                resp2 = func()
+                logger.info("kis_broker.token_retry_result", status=resp2.status_code)
+                return resp2
+            if msg_cd == "EGW00201":
+                logger.warning("kis_broker.rate_limited_rest", msg=msg)
+                time.sleep(1)
+                return func()
+            logger.error("kis_broker.api_error", status=resp.status_code, msg_cd=msg_cd, msg=msg)
+            resp.raise_for_status()
+        return resp
+
+    async def sync_positions(self) -> int:
+        if not self._connected or self._api is None:
+            return 0
+
+        await self._throttle()
+        res = await asyncio.to_thread(
+            self._retry_on_token_expired, self._api._get_kr_total_balance
+        )
+        items = res.outputs[0] if res.outputs else []
+        api_positions: dict[str, Position] = {}
+        for item in items:
+            qty = int(item.get("hldg_qty", 0))
+            sellable = int(item.get("ord_psbl_qty", 0))
+            if qty == 0 or sellable == 0:
+                continue
+            code = item.get("pdno", "")
+            if not code:
+                continue
+            name = item.get("prdt_name", code)
+            self._position_names[code] = name
+            pnl = Decimal(item.get("evlu_pfls_amt", "0"))
+            pnl_rt = float(item.get("evlu_pfls_rt", "0"))
+            api_positions[code] = Position(
+                symbol=code,
+                side=Side.BUY,
+                quantity=qty,
+                avg_price=Decimal(item.get("pchs_avg_pric", "0")),
+                current_price=Decimal(item.get("prpr", "0")),
+                strategy="synced",
+                opened_at=datetime.now(),
+                unrealized_pnl=pnl,
+            )
+            api_positions[code]._pnl_pct = pnl_rt
+
+        existing = self._pm._positions
+        for code, api_pos in api_positions.items():
+            if code in existing:
+                existing[code].quantity = api_pos.quantity
+                existing[code].avg_price = api_pos.avg_price
+                existing[code].current_price = api_pos.current_price
+                existing[code].unrealized_pnl = api_pos.unrealized_pnl
+                existing[code]._pnl_pct = api_pos._pnl_pct
+            else:
+                existing[code] = api_pos
+
+        gone = [s for s in existing if s not in api_positions]
+        for s in gone:
+            del existing[s]
+
+        logger.info("kis_broker.positions_synced", count=len(existing))
+        return len(existing)
 
     async def get_balance(self) -> Decimal:
         if not self._connected or self._api is None:
             return Decimal("0")
 
         await self._throttle()
-        res = self._api._get_kr_total_balance()
+        res = self._retry_on_token_expired(self._api._get_kr_total_balance)
         summary = res.outputs[1][0]
         value = summary.get("tot_evlu_amt") or summary.get("dnca_tot_amt", "0")
-        self._daily_pnl = Decimal(str(int(summary.get("asst_icdc_amt", "0"))))
         return Decimal(str(int(value)))
 
     async def get_trade_history(self) -> list[dict[str, Any]]:
-        return []
+        if not self._connected or self._api is None:
+            return []
+        return await self._fetch_daily_ccld()
+
+    async def get_period_pnl(self) -> list[dict[str, Any]]:
+        if not self._connected or self._api is None or self._mock:
+            return []
+        return await self._get_trade_history_profit()
+
+    async def _get_trade_history_profit(self) -> list[dict[str, Any]]:
+        """실거래: 기간별매매손익현황조회 (수수료/손익 포함)."""
+        rest_urls = settings.get("kis_api.rest_urls", {})
+        base_url = rest_urls.get("real")
+        if not base_url:
+            return []
+
+        today = datetime.now().strftime("%Y%m%d")
+        headers = {
+            "content-type": "application/json; charset=utf-8",
+            "appkey": self._app_key,
+            "appsecret": self._app_secret,
+            "tr_id": "TTTC8715R",
+            "custtype": "P",
+        }
+        params = {
+            "CANO": self._cano,
+            "ACNT_PRDT_CD": self._acnt_prdt_cd,
+            "INQR_STRT_DT": today,
+            "INQR_END_DT": today,
+            "PDNO": "",
+            "SORT_DVSN": "00",
+            "CBLC_DVSN": "00",
+            "CTX_AREA_FK100": "",
+            "CTX_AREA_NK100": "",
+        }
+
+        all_items: list[dict[str, str]] = []
+        ctx_fk = ""
+        ctx_nk = ""
+
+        await self._throttle()
+        try:
+            for _ in range(10):
+                p = {**params, "CTX_AREA_FK100": ctx_fk, "CTX_AREA_NK100": ctx_nk}
+                tr_cont = "" if not ctx_fk else "N"
+
+                def _fetch(p=p, tr_cont=tr_cont):
+                    h = {**headers, "authorization": self._api.token.value, "tr_cont": tr_cont}
+                    return requests.get(
+                        f"{base_url}/uapi/domestic-stock/v1/trading/inquire-period-trade-profit",
+                        headers=h, params=p, timeout=10,
+                    )
+
+                resp = await asyncio.to_thread(self._retry_on_token_expired_resp, _fetch)
+                data = resp.json()
+                if data.get("rt_cd") != "0":
+                    logger.warning("kis_broker.trade_profit_api_error", msg=data.get("msg1", ""), code=data.get("msg_cd", ""))
+                    break
+
+                all_items.extend(data.get("output1", []))
+
+                resp_cont = resp.headers.get("tr_cont", "")
+                if resp_cont not in ("F", "M"):
+                    break
+                ctx_fk = data.get("ctx_area_fk100", "").strip()
+                ctx_nk = data.get("ctx_area_nk100", "").strip()
+                if not ctx_fk:
+                    break
+                await self._throttle()
+
+            trades: list[dict[str, Any]] = []
+            for item in all_items:
+                symbol = item.get("pdno", "")
+                if not symbol:
+                    continue
+                side_name = item.get("trad_dvsn_name", "")
+                side = "sell" if "매도" in side_name else "buy"
+                qty = int(item.get("sll_qty", "0") if side == "sell" else item.get("buy_qty", "0"))
+                if qty == 0:
+                    continue
+                price = int(item.get("sll_pric", "0") if side == "sell" else item.get("pchs_unpr", "0"))
+                fee = int(item.get("fee", "0")) + int(item.get("tl_tax", "0"))
+                pnl = item.get("rlzt_pfls", "")
+
+                trades.append({
+                    "symbol": symbol,
+                    "name": item.get("prdt_name", ""),
+                    "side": side,
+                    "price": price,
+                    "quantity": qty,
+                    "amount": int(item.get("sll_amt", "0") if side == "sell" else item.get("buy_amt", "0")),
+                    "time": item.get("trad_dt", ""),
+                    "fee": fee,
+                    "pnl": pnl if pnl and pnl != "0" else "",
+                })
+            logger.info("kis_broker.trade_profit_fetched", count=len(trades))
+            return trades
+        except Exception as e:
+            logger.error("kis_broker.trade_profit_failed", error=str(e))
+            return []
+
+    async def _fetch_daily_ccld(self) -> list[dict[str, Any]]:
+        """주식일별주문체결조회 — mock/real 양 모드 지원."""
+        rest_urls = settings.get("kis_api.rest_urls", {})
+        url_key = "virtual" if self._mock else "real"
+        base_url = rest_urls.get(url_key)
+        if not base_url:
+            return []
+
+        tr_id = "VTTC0081R" if self._mock else "TTTC8001R"
+        today = datetime.now().strftime("%Y%m%d")
+        headers = {
+            "content-type": "application/json; charset=utf-8",
+            "appkey": self._app_key,
+            "appsecret": self._app_secret,
+            "tr_id": tr_id,
+            "custtype": "P",
+        }
+        params = {
+            "CANO": self._cano,
+            "ACNT_PRDT_CD": self._acnt_prdt_cd,
+            "INQR_STRT_DT": today,
+            "INQR_END_DT": today,
+            "SLL_BUY_DVSN_CD": "00",
+            "PDNO": "",
+            "ORD_GNO_BRNO": "",
+            "ODNO": "",
+            "CCLD_DVSN": "00",
+            "INQR_DVSN": "00",
+            "INQR_DVSN_1": "",
+            "INQR_DVSN_3": "00",
+            "CTX_AREA_FK100": "",
+            "CTX_AREA_NK100": "",
+        }
+
+        all_items: list[dict[str, str]] = []
+        ctx_fk = ""
+        ctx_nk = ""
+
+        await self._throttle()
+        try:
+            for page_num in range(10):
+                p = {**params, "CTX_AREA_FK100": ctx_fk, "CTX_AREA_NK100": ctx_nk}
+                tr_cont = "" if not ctx_fk else "N"
+
+                def _fetch(p=p, tr_cont=tr_cont):
+                    h = {**headers, "authorization": self._api.token.value, "tr_cont": tr_cont}
+                    return requests.get(
+                        f"{base_url}/uapi/domestic-stock/v1/trading/inquire-daily-ccld",
+                        headers=h, params=p, timeout=10,
+                    )
+
+                resp = await asyncio.to_thread(self._retry_on_token_expired_resp, _fetch)
+                data = resp.json()
+                if data.get("rt_cd") != "0":
+                    logger.warning("kis_broker.trade_history_api_error", msg=data.get("msg1", ""), code=data.get("msg_cd", ""))
+                    break
+
+                page_items = data.get("output1", [])
+                all_items.extend(page_items)
+
+                resp_cont = resp.headers.get("tr_cont", "")
+                has_next = resp_cont in ("F", "M")
+
+                if page_num == 0:
+                    if len(page_items) == self._last_ccld_first_page and has_next == self._last_ccld_has_next and not has_next:
+                        logger.debug("kis_broker.trade_no_change", count=len(page_items))
+                        return []
+                    self._last_ccld_first_page = len(page_items)
+                    self._last_ccld_has_next = has_next
+
+                if not has_next:
+                    break
+                ctx_fk_raw = data.get("ctx_area_fk100", "")
+                ctx_nk_raw = data.get("ctx_area_nk100", "")
+                ctx_fk = ctx_fk_raw.strip()
+                ctx_nk = ctx_nk_raw.strip()
+                if not ctx_fk and not ctx_nk:
+                    break
+                await self._throttle()
+            trades = self._parse_ccld_trades(all_items)
+            logger.info("kis_broker.trade_history_fetched", count=len(trades))
+            return trades
+        except Exception as e:
+            logger.error("kis_broker.trade_history_failed", error=str(e))
+            return []
+
+    def _parse_ccld_trades(self, items: list[dict[str, str]]) -> list[dict[str, Any]]:
+        trades: list[dict[str, Any]] = []
+        for item in items:
+            side_cd = item.get("sll_buy_dvsn_cd", "")
+            if not side_cd:
+                continue
+            tot_ccld_qty = int(item.get("tot_ccld_qty", "0"))
+            if tot_ccld_qty == 0:
+                continue
+
+            trades.append({
+                "order_no": item.get("odno", ""),
+                "order_date": item.get("ord_dt", ""),
+                "symbol": item.get("pdno", ""),
+                "name": item.get("prdt_name", ""),
+                "side": "sell" if side_cd == "01" else "buy",
+                "ord_qty": int(item.get("ord_qty", "0")),
+                "ord_price": int(item.get("ord_unpr", "0")),
+                "ord_time": item.get("ord_tmd", ""),
+                "tot_ccld_qty": tot_ccld_qty,
+                "avg_price": int(item.get("avg_prvs", "0")),
+                "tot_ccld_amt": int(item.get("tot_ccld_amt", "0")),
+                "rmn_qty": int(item.get("rmn_qty", "0")),
+                "orgn_order_no": item.get("orgn_odno", ""),
+                "ord_dvsn_cd": item.get("ord_dvsn_cd", ""),
+                "cncl_yn": item.get("cncl_yn", ""),
+            })
+        return trades
 
     async def get_top_volume_stocks(self, count: int = 30) -> list[dict[str, Any]]:
         if not self._connected or self._api is None:
@@ -197,7 +503,7 @@ class KISBroker(BaseBroker):
             raise RuntimeError("kis_api.rest_urls.real 설정이 필요합니다 (settings.toml)")
         headers = {
             "content-type": "application/json; charset=utf-8",
-            "authorization": f"Bearer {self._api.token.value}",
+            "authorization": self._api.token.value,
             "appkey": self._app_key,
             "appsecret": self._app_secret,
             "tr_id": "FHPST01710000",
@@ -229,7 +535,13 @@ class KISBroker(BaseBroker):
                     logger.warning("kis_broker.rate_limited", attempt=attempt + 1)
                     await asyncio.sleep(1)
                     continue
-                resp.raise_for_status()
+                if resp.status_code >= 400:
+                    try:
+                        body = resp.json()
+                        logger.error("kis_broker.api_error", status=resp.status_code, msg_cd=body.get("msg_cd", ""), msg=body.get("msg1", ""))
+                    except Exception:
+                        logger.error("kis_broker.api_error", status=resp.status_code, body=resp.text[:500])
+                    resp.raise_for_status()
                 data = resp.json()
                 output = data.get("output", [])
 
