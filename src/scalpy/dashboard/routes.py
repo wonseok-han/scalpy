@@ -55,6 +55,7 @@ def init_routes(
     if bus:
         for event in _SSE_EVENTS:
             bus.subscribe(event, _on_state_change)
+        bus.subscribe("order.filled", _on_order_filled)
 
     logger.info("routes.initialized", engine=engine is not None, screener=screener is not None, stream=stream is not None)
 
@@ -63,6 +64,25 @@ def _on_state_change(data: dict[str, Any]) -> None:
     if _sse is None:
         return
     _sse.broadcast("state", _build_sse_state())
+
+
+def _on_order_filled(data: dict[str, Any]) -> None:
+    if not _trade_repo_ref or not _engine_ref:
+        return
+    asyncio.create_task(_sync_trades_now())
+
+
+async def _sync_trades_now() -> None:
+    try:
+        broker = _engine_ref._broker
+        broker._last_ccld_first_page = -1
+        trades = await broker.get_trade_history()
+        if trades:
+            _trade_repo_ref.sync_trades(trades)
+        if _sse:
+            _sse.broadcast("state", _build_sse_state())
+    except Exception as e:
+        logger.error("routes.trade_sync_failed", error=str(e))
 
 
 def _build_sse_state() -> dict[str, Any]:

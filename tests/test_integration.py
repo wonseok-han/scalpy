@@ -28,7 +28,7 @@ class TestBrokerOrderFlow:
 
         balance = await broker.get_balance()
         cost = Decimal("720000")
-        commission = int(cost * Decimal("0.00015"))
+        commission = int(cost * Decimal("0.000147"))
         assert balance == Decimal("10000000") - cost - commission
 
         broker.positions.update_on_fill(result)
@@ -54,8 +54,8 @@ class TestBrokerOrderFlow:
         balance = await broker.get_balance()
         buy_cost = Decimal("720000")
         sell_cost = Decimal("730000")
-        buy_fee = int(buy_cost * Decimal("0.00015"))
-        sell_fee = int(sell_cost * Decimal("0.00015")) + int(sell_cost * Decimal("0.0018"))
+        buy_fee = int(buy_cost * Decimal("0.000147"))
+        sell_fee = int(sell_cost * Decimal("0.000147")) + int(sell_cost * Decimal("0.0018"))
         assert balance == Decimal("10000000") - buy_cost - buy_fee + sell_cost - sell_fee
 
         positions = broker.positions.all()

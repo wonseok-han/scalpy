@@ -9,7 +9,7 @@ from scalpy.data.schema import Base, TradeRow
 
 logger = structlog.get_logger()
 
-_COMMISSION_RATE = Decimal("0.00015")
+_COMMISSION_RATE = Decimal("0.000147")
 _SELL_TAX_RATE = Decimal("0.0018")
 
 
@@ -113,36 +113,60 @@ class TradeRepository:
         return commission
 
     def _recalc_pnl(self, session: Session, order_date: str) -> None:
-        """sync 완료 후 sell 건의 pnl을 일괄 재계산."""
-        buy_agg = session.execute(
-            select(
-                TradeRow.symbol,
-                func.sum(TradeRow.tot_ccld_amt).label("total_amt"),
-                func.sum(TradeRow.tot_ccld_qty).label("total_qty"),
-            ).where(
-                TradeRow.side == "buy",
-                TradeRow.order_date == order_date,
-            ).group_by(TradeRow.symbol)
-        ).all()
-        buy_avgs: dict[str, float] = {}
-        for row in buy_agg:
-            if row.total_qty and row.total_qty > 0:
-                buy_avgs[row.symbol] = row.total_amt / row.total_qty
+        """sync 완료 후 sell 건의 pnl을 FIFO 매칭으로 재계산."""
+        symbols = [r[0] for r in session.execute(
+            select(TradeRow.symbol).where(TradeRow.order_date == order_date).group_by(TradeRow.symbol)
+        ).all()]
 
-        sells = session.scalars(
-            select(TradeRow).where(
-                TradeRow.side == "sell",
-                TradeRow.order_date == order_date,
-            )
-        ).all()
+        for symbol in symbols:
+            buys = session.scalars(
+                select(TradeRow).where(
+                    TradeRow.symbol == symbol,
+                    TradeRow.side == "buy",
+                    TradeRow.order_date == order_date,
+                ).order_by(TradeRow.ord_time)
+            ).all()
+            sells = session.scalars(
+                select(TradeRow).where(
+                    TradeRow.symbol == symbol,
+                    TradeRow.side == "sell",
+                    TradeRow.order_date == order_date,
+                ).order_by(TradeRow.ord_time)
+            ).all()
 
-        for sell in sells:
-            buy_avg = buy_avgs.get(sell.symbol)
-            if buy_avg is None or sell.avg_price == 0 or sell.tot_ccld_qty == 0:
-                sell.pnl = None
-                continue
-            buy_fee = int(buy_avg * sell.tot_ccld_qty * float(_COMMISSION_RATE))
-            sell.pnl = int((sell.avg_price - buy_avg) * sell.tot_ccld_qty - sell.fee - buy_fee)
+            buy_queue: list[tuple[int, float]] = []
+            for b in buys:
+                if b.tot_ccld_qty > 0 and b.avg_price > 0:
+                    buy_queue.append((b.tot_ccld_qty, float(b.avg_price)))
+
+            qi = 0
+            remaining = buy_queue[0][0] if buy_queue else 0
+
+            for sell in sells:
+                if sell.avg_price == 0 or sell.tot_ccld_qty == 0:
+                    sell.pnl = None
+                    continue
+
+                to_match = sell.tot_ccld_qty
+                total_buy_cost = 0.0
+
+                while to_match > 0 and qi < len(buy_queue):
+                    take = min(to_match, remaining)
+                    total_buy_cost += take * buy_queue[qi][1]
+                    to_match -= take
+                    remaining -= take
+                    if remaining <= 0:
+                        qi += 1
+                        remaining = buy_queue[qi][0] if qi < len(buy_queue) else 0
+
+                if to_match > 0:
+                    sell.pnl = None
+                    continue
+
+                matched_qty = sell.tot_ccld_qty
+                buy_avg = total_buy_cost / matched_qty
+                buy_fee = int(total_buy_cost * float(_COMMISSION_RATE))
+                sell.pnl = int((sell.avg_price - buy_avg) * matched_qty - sell.fee - buy_fee)
 
         session.commit()
 
@@ -185,8 +209,9 @@ class TradeRepository:
                 .order_by(TradeRow.ord_time.desc())
             ).all()
 
-            return [
-                {
+            result = []
+            for r in rows:
+                entry: dict = {
                     "order_no": r.order_no,
                     "symbol": r.symbol,
                     "name": r.name,
@@ -199,7 +224,12 @@ class TradeRepository:
                     "rmn_qty": r.rmn_qty,
                     "fee": str(r.fee),
                     "pnl": str(r.pnl) if r.pnl is not None else "",
+                    "pnl_pct": "",
                     "time": f"{r.ord_time[:2]}:{r.ord_time[2:4]}:{r.ord_time[4:6]}" if len(r.ord_time) >= 6 else r.ord_time,
                 }
-                for r in rows
-            ]
+                if r.side == "sell" and r.pnl is not None and r.tot_ccld_amt > 0:
+                    buy_cost = r.tot_ccld_amt - r.pnl + r.fee
+                    if buy_cost > 0:
+                        entry["pnl_pct"] = round(r.pnl / buy_cost * 100, 2)
+                result.append(entry)
+            return result

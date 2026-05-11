@@ -671,6 +671,7 @@ tbody tr:last-child td { border-bottom: none; }
                 <th class="text-right">수량</th>
                 <th class="text-right">체결가</th>
                 <th class="text-right">수수료</th>
+                <th class="text-right">손익</th>
               </tr>
             </thead>
             <tbody id="trades"></tbody>
@@ -855,8 +856,13 @@ function renderStrategies(){
   }
 }
 
+let _lastTradeCount=0;
 function applySseState(d){
-  if(d.status) updateStatus(d.status);
+  if(d.status){
+    updateStatus(d.status);
+    const tc=d.status.trade_count||0;
+    if(tc!==_lastTradeCount){_lastTradeCount=tc;loadTrades();}
+  }
   if(d.positions) updatePositions(d.positions);
   if(d.screening) updateScreening(d.screening);
 }
@@ -989,7 +995,7 @@ function renderTradePage(){
   const tb=document.getElementById('trades');
   const pager=document.getElementById('trade-pager');
   if(!_allTrades.length){
-    tb.innerHTML='<tr><td class="empty-row" colspan="6">거래 없음</td></tr>';
+    tb.innerHTML='<tr><td class="empty-row" colspan="7">거래 없음</td></tr>';
     pager.style.display='none';
     return;
   }
@@ -998,6 +1004,9 @@ function renderTradePage(){
   const start=_tradePage*_tradePageSize;
   const items=_allTrades.slice(start,start+_tradePageSize);
   const rows=items.map(t=>{
+    const pnl=t.pnl?Number(t.pnl):null;
+    const pct=t.pnl_pct!==''&&t.pnl_pct!==undefined?Number(t.pnl_pct):null;
+    const pnlStr=pnl!==null?`<span class="${pnl>=0?'text-profit':'text-loss'}">${pnlSign(pnl)}원${pct!==null?' ('+(pct>0?'+':'')+pct.toFixed(2)+'%)':''}</span>`:'';
     return `<tr>
       <td>${t.time}</td>
       <td><span class="side-tag ${t.side==='buy'?'buy':'sell'}">${t.side==='buy'?'BUY':'SELL'}</span></td>
@@ -1005,6 +1014,7 @@ function renderTradePage(){
       <td class="text-right">${t.quantity}</td>
       <td class="text-right">${fmt(t.price)}</td>
       <td class="text-right">${t.fee?fmt(t.fee)+'원':''}</td>
+      <td class="text-right">${pnlStr}</td>
     </tr>`;
   });
   tb.innerHTML=rows.join('');

@@ -24,6 +24,8 @@ _SYNC_INTERVAL = 10
 _RISK_CHECK_INTERVAL = 10
 _MIN_CONFIDENCE = 0.5
 _REJECTED_COOLDOWN = 60
+_CLOSE_COOLDOWN = 300
+_MIN_PROFIT_RATIO = Decimal("0.003")
 _KST = zoneinfo.ZoneInfo("Asia/Seoul")
 _CUTOFF_BUY = dt_time(15, 15)
 _CUTOFF_CLOSE = dt_time(15, 18)
@@ -48,6 +50,7 @@ class TradingEngine:
         self._market_close_done = False
         self._last_sync_at: float = 0
         self._rejected_symbols: dict[str, float] = {}
+        self._closed_symbols: dict[str, float] = {}
         self._untradeable: set[str] = set()
         self._risk_loop_task: asyncio.Task[None] | None = None
         self._sync_loop_task: asyncio.Task[None] | None = None
@@ -276,6 +279,9 @@ class TradingEngine:
             return
 
         if signal.side == Side.BUY:
+            closed_at = self._closed_symbols.get(signal.symbol)
+            if closed_at and time.monotonic() - closed_at < _CLOSE_COOLDOWN:
+                return
             rejected_at = self._rejected_symbols.get(signal.symbol)
             if rejected_at and time.monotonic() - rejected_at < _REJECTED_COOLDOWN:
                 return
@@ -296,6 +302,9 @@ class TradingEngine:
             if pos is None or pos.quantity == 0:
                 return
             if pos.strategy != "synced" and pos.strategy != signal.strategy:
+                return
+            gain = (pos.current_price - pos.avg_price) / pos.avg_price if pos.avg_price > 0 else Decimal("0")
+            if gain < _MIN_PROFIT_RATIO:
                 return
             qty = pos.quantity
 
@@ -420,6 +429,7 @@ class TradingEngine:
             return
         if result.status == OrderStatus.FILLED:
             self.positions.update_on_fill(result)
+            self._closed_symbols[pos.symbol] = time.monotonic()
             logger.info(
                 "engine.position_force_closed", symbol=pos.symbol, reason=reason
             )

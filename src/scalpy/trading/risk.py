@@ -14,11 +14,13 @@ class RiskManager:
         take_profit_ratio: float = 0.03,
         max_position_size: int = 100,
         max_open_positions: int = 3,
+        max_position_ratio: float = 0.3,
     ) -> None:
         self.stop_loss_ratio = Decimal(str(stop_loss_ratio))
         self.take_profit_ratio = Decimal(str(take_profit_ratio))
         self.max_position_size = max_position_size
         self.max_open_positions = max_open_positions
+        self.max_position_ratio = max_position_ratio
 
     def check_stop_loss(self, position: Position) -> bool:
         if position.quantity == 0:
@@ -71,5 +73,7 @@ class RiskManager:
     def get_max_position_size(self, symbol: str, balance: Decimal, price: Decimal) -> int:
         if price <= 0:
             return 0
+        max_cost = balance * Decimal(str(self.max_position_ratio))
+        by_ratio = int(max_cost / price)
         affordable = int(balance / price)
-        return min(affordable, self.max_position_size)
+        return min(affordable, by_ratio, self.max_position_size)

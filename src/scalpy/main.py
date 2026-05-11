@@ -72,6 +72,7 @@ def build_engine(registry: StrategyRegistry) -> tuple[TradingEngine, BaseBroker]
         take_profit_ratio=trading.get("take_profit_ratio", 0.03),
         max_position_size=trading.get("max_position_size", 100),
         max_open_positions=trading.get("max_open_positions", 3),
+        max_position_ratio=trading.get("max_position_ratio", 0.3),
     )
     return TradingEngine(broker, registry, risk), broker
 
@@ -148,6 +149,8 @@ async def _start_trading(
             broker=broker,
             max_stocks=screening_cfg.get("max_stocks", 5),
             min_change_rate=screening_cfg.get("min_change_rate", 2.0),
+            max_change_rate=screening_cfg.get("max_change_rate", 8.0),
+            min_change_rate_lower=screening_cfg.get("min_change_rate_lower", -2.0),
             min_volume=screening_cfg.get("min_volume", 100_000),
         )
         held = [p.symbol for p in engine.positions.all()]
@@ -218,6 +221,8 @@ async def run() -> None:
             broker=broker,
             max_stocks=screening_cfg.get("max_stocks", 5),
             min_change_rate=screening_cfg.get("min_change_rate", 2.0),
+            max_change_rate=screening_cfg.get("max_change_rate", 8.0),
+            min_change_rate_lower=screening_cfg.get("min_change_rate_lower", -2.0),
             min_volume=screening_cfg.get("min_volume", 100_000),
         )
 

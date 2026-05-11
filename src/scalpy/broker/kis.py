@@ -58,6 +58,8 @@ class KISBroker(BaseBroker):
         self._api: Any = None
         self._last_api_call: float = 0
         self._api_lock = asyncio.Lock()
+        self._last_ccld_first_page: int = -1
+        self._last_ccld_has_next: bool = False
 
     async def _throttle(self) -> None:
         gap = 1.05 if self._mock else 0.15
@@ -416,7 +418,7 @@ class KISBroker(BaseBroker):
 
         await self._throttle()
         try:
-            for _ in range(10):
+            for page_num in range(10):
                 p = {**params, "CTX_AREA_FK100": ctx_fk, "CTX_AREA_NK100": ctx_nk}
                 tr_cont = "" if not ctx_fk else "N"
 
@@ -437,17 +439,24 @@ class KISBroker(BaseBroker):
                 all_items.extend(page_items)
 
                 resp_cont = resp.headers.get("tr_cont", "")
+                has_next = resp_cont in ("F", "M")
+
+                if page_num == 0:
+                    if len(page_items) == self._last_ccld_first_page and has_next == self._last_ccld_has_next and not has_next:
+                        logger.debug("kis_broker.trade_no_change", count=len(page_items))
+                        return []
+                    self._last_ccld_first_page = len(page_items)
+                    self._last_ccld_has_next = has_next
+
+                if not has_next:
+                    break
                 ctx_fk_raw = data.get("ctx_area_fk100", "")
                 ctx_nk_raw = data.get("ctx_area_nk100", "")
-                logger.info("kis_broker.trade_page", page_count=len(page_items), total=len(all_items), tr_cont=resp_cont, ctx_fk=repr(ctx_fk_raw), ctx_nk=repr(ctx_nk_raw))
-                if resp_cont not in ("F", "M"):
-                    break
                 ctx_fk = ctx_fk_raw.strip()
                 ctx_nk = ctx_nk_raw.strip()
                 if not ctx_fk and not ctx_nk:
                     break
                 await self._throttle()
-
             trades = self._parse_ccld_trades(all_items)
             logger.info("kis_broker.trade_history_fetched", count=len(trades))
             return trades

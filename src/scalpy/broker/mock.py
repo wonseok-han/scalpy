@@ -12,7 +12,7 @@ from scalpy.core.models import Order, Position
 logger = structlog.get_logger()
 
 
-_COMMISSION_RATE = Decimal("0.00015")
+_COMMISSION_RATE = Decimal("0.000147")
 _SELL_TAX_RATE = Decimal("0.0018")
 
 
