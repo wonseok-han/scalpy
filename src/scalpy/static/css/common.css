@@ -234,8 +234,9 @@ tbody tr:last-child td { border-bottom: none; }
   background: var(--bg-elevated); border: 1px solid var(--border);
   border-radius: var(--radius-sm); padding: 9px 12px;
   color: var(--text-primary); font-family: var(--font); font-size: 0.82rem;
-  transition: border-color 0.2s; outline: none; width: 130px;
+  transition: border-color 0.2s; outline: none; width: 130px; box-sizing: border-box;
 }
+.form-grid .form-input { width: 100%; }
 .form-input:focus { border-color: var(--accent); }
 .form-input::placeholder { color: var(--text-tertiary); }
 .form-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 12px; }
