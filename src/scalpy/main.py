@@ -36,7 +36,9 @@ def build_registry() -> StrategyRegistry:
         MeanReversionStrategy(),
         FactorStrategy(),
     ]
-    enabled = settings.get("strategies.enabled", [s.name for s in all_strategies])
+    scalping_enabled = set(settings.get("strategies.scalping_enabled", ["ma_cross"]))
+    quant_enabled = set(settings.get("strategies.quant_enabled", ["momentum"]))
+    enabled = scalping_enabled | quant_enabled
     for s in all_strategies:
         registry.register(s)
         if s.name not in enabled:
@@ -139,14 +141,24 @@ _QUANT_STRATEGIES = {"momentum", "mean_reversion", "factor"}
 
 
 def _apply_mode(registry: StrategyRegistry, mode: str) -> None:
-    if mode == "scalping":
-        for s in registry.all():
+    scalping_on = set(settings.get("strategies.scalping_enabled", ["ma_cross"]))
+    quant_on = set(settings.get("strategies.quant_enabled", ["momentum"]))
+    for s in registry.all():
+        if mode == "scalping":
             if s.name in _QUANT_STRATEGIES:
                 s.enabled = False
-    elif mode == "quant":
-        for s in registry.all():
+            else:
+                s.enabled = s.name in scalping_on
+        elif mode == "quant":
             if s.name in _SCALPING_STRATEGIES:
                 s.enabled = False
+            else:
+                s.enabled = s.name in quant_on
+        else:
+            if s.name in _SCALPING_STRATEGIES:
+                s.enabled = s.name in scalping_on
+            elif s.name in _QUANT_STRATEGIES:
+                s.enabled = s.name in quant_on
     logger.info("scalpy.mode_applied", mode=mode, enabled=[s.name for s in registry.enabled()])
 
 

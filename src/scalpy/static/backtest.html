@@ -621,14 +621,29 @@ function applyParams(sl, tp, mp) {
 function copyOptJson(idx) {
   const r = _optResults[idx]; if (!r) return;
   const obj = { risk: { stop_loss_ratio: r.stop_loss, take_profit_ratio: r.take_profit, max_open_positions: r.max_positions } };
+  const stratName = r.strategy || '';
+  obj.strategies = {};
   if (r.strategies && Object.keys(r.strategies).length) {
-    obj.strategies = {};
     for (const [name, params] of Object.entries(r.strategies)) {
-      obj.strategies[name] = { params };
+      obj.strategies[name] = { enabled: true, params };
     }
+  } else if (stratName) {
+    obj.strategies[stratName] = { enabled: true };
   }
-  navigator.clipboard.writeText(JSON.stringify(obj, null, 2));
-  toast('JSON 복사됨 — 스캘핑/퀀트 페이지에서 붙여넣기', 'success');
+  const text = JSON.stringify(obj, null, 2);
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(() => toast('JSON 복사됨 — 스캘핑/퀀트 페이지에서 붙여넣기', 'success')).catch(() => _fallbackCopy(text));
+  } else {
+    _fallbackCopy(text);
+  }
+}
+function _fallbackCopy(text) {
+  const ta = document.createElement('textarea');
+  ta.value = text; ta.style.cssText = 'position:fixed;left:-9999px';
+  document.body.appendChild(ta); ta.select();
+  try { document.execCommand('copy'); toast('JSON 복사됨 — 스캘핑/퀀트 페이지에서 붙여넣기', 'success'); }
+  catch { toast('복사 실패 — 수동으로 복사하세요', 'error'); console.log(text); }
+  document.body.removeChild(ta);
 }
 
 async function loadDbInfo() {

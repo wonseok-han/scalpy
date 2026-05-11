@@ -15,6 +15,11 @@ logger = structlog.get_logger()
 
 _ETF_PREFIXES = ("KODEX", "TIGER", "KBSTAR", "RISE", "ARIRANG", "SOL", "ACE", "HANARO", "KOSEF", "PLUS")
 
+_STRAT_INTERNAL_ATTRS = frozenset({
+    "name", "display_name", "enabled",
+    "cooldown_ticks",
+})
+
 
 def _is_etf(symbol: str, name: str) -> bool:
     if symbol and not symbol[0].isdigit():
@@ -648,7 +653,7 @@ async def get_settings() -> dict[str, Any]:
         for s in _registry_ref.all():
             params = {}
             for k in vars(s):
-                if k.startswith("_") or k in ("name", "display_name", "enabled"):
+                if k.startswith("_") or k in _STRAT_INTERNAL_ATTRS:
                     continue
                 v = getattr(s, k)
                 if isinstance(v, (int, float, str, bool)):
@@ -770,13 +775,19 @@ async def persist_settings() -> dict[str, Any]:
         trading["max_open_positions"] = rm.max_open_positions
         trading["max_position_ratio"] = rm.max_position_ratio
 
-    # strategy params
+    # strategy enabled lists + params
     if _registry_ref:
         strats = d.setdefault("strategies", {})
+        scalping_on = [s.name for s in _registry_ref.all() if s.enabled and s.name in _SCALPING_STRATEGIES]
+        quant_on = [s.name for s in _registry_ref.all() if s.enabled and s.name in _QUANT_STRATEGIES]
+        strats["scalping_enabled"] = scalping_on
+        strats["quant_enabled"] = quant_on
+        if "enabled" in strats:
+            del strats["enabled"]
         for s in _registry_ref.all():
             sc = strats.setdefault(s.name, {})
             for k in vars(s):
-                if k.startswith("_") or k in ("name", "display_name", "enabled"):
+                if k.startswith("_") or k in _STRAT_INTERNAL_ATTRS:
                     continue
                 v = getattr(s, k)
                 if isinstance(v, (int, float, str, bool)):

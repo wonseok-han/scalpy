@@ -227,9 +227,9 @@
           <th>#</th>
           <th>종목</th>
           <th class="text-right">현재가</th>
-          <th class="text-right">모멘텀(20d)</th>
-          <th class="text-right">변동성</th>
-          <th class="text-right">거래량(20d avg)</th>
+          <th class="text-right">모멘텀</th>
+          <th class="text-right">샤프</th>
+          <th class="text-right">거래대금</th>
           <th class="text-right">거래량 급증</th>
           <th class="text-right">ATR%</th>
           <th class="text-right">RSI</th>
@@ -434,11 +434,17 @@ function renderQuantStrats(){
   }).join('');
 }
 
+function renderRiskTable(){
+  const rows=Object.entries(_quantStrats).map(([name,s])=>{
+    return `<tr><td>${s.display_name||name}</td><td><span style="color:${s.enabled?'var(--profit)':'var(--text-tertiary)'}">${s.enabled?'활성':'비활성'}</span></td><td class="text-right">${s.stop_loss_ratio!=null?(s.stop_loss_ratio*100).toFixed(1)+'%':'글로벌'}</td><td class="text-right">${s.take_profit_ratio!=null?(s.take_profit_ratio*100).toFixed(1)+'%':'글로벌'}</td></tr>`;
+  });
+  document.getElementById('risk-table').innerHTML=rows.join('')||'<tr><td colspan="4" class="empty-row">퀀트 전략 없음</td></tr>';
+}
 async function toggleStrat(name){
   try{
     const r=await fetch('/api/strategies/'+name+'/toggle',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode:'quant'})});
     const d=await r.json();
-    if(d.success&&_quantStrats[name]){_quantStrats[name].enabled=d.enabled;renderQuantStrats();toast((_quantStrats[name].display_name||name)+(d.enabled?' 활성화':' 비활성화'),'success');}
+    if(d.success&&_quantStrats[name]){_quantStrats[name].enabled=d.enabled;renderQuantStrats();renderRiskTable();toast((_quantStrats[name].display_name||name)+(d.enabled?' 활성화':' 비활성화'),'success');}
   }catch(e){console.error(e);}
 }
 
@@ -539,12 +545,10 @@ async function loadConfig(){
       ['OHLCV 갱신주기','ohlcv_refresh_minutes'],
     ].map(([l,k])=>`<div class="config-item"><span class="config-label">${l}</span><span class="config-value">${k==='min_avg_volume'?fmt(q[k]||0):(q[k]??'-')}</span></div>`).join('');
     const strats=d.strategies||{};_quantStrats={};
-    const riskRows=[];
     for(const [name,s] of Object.entries(strats)){
       if(_QUANT_NAMES.has(name))_quantStrats[name]=s;
-      riskRows.push(`<tr><td>${s.display_name||name}</td><td><span style="color:${s.enabled?'var(--profit)':'var(--text-tertiary)'}">${s.enabled?'활성':'비활성'}</span></td><td class="text-right">${s.stop_loss_ratio!==null?(s.stop_loss_ratio*100).toFixed(1)+'%':'글로벌'}</td><td class="text-right">${s.take_profit_ratio!==null?(s.take_profit_ratio*100).toFixed(1)+'%':'글로벌'}</td></tr>`);
     }
-    document.getElementById('risk-table').innerHTML=riskRows.join('');
+    renderRiskTable();
     renderQuantStrats();
   }catch(e){console.error(e);}
 }
@@ -566,19 +570,21 @@ async function runScan(){
     _scanSymbols=items.map(s=>s.symbol);
     document.getElementById('candidate-count').textContent=items.length+'개';
     if(!items.length){tb.innerHTML='<tr><td colspan="10" class="empty-row">조건에 맞는 종목 없음</td></tr>';return;}
-    const mx=Math.max(...items.map(s=>s.score));
+    const maxScore=Math.max(...items.map(s=>s.score));
+    const minScore=Math.min(...items.map(s=>s.score));
+    const scoreRange=maxScore-minScore||1;
     tb.innerHTML=items.map((s,i)=>{
-      const pct=mx>0?s.score/mx*100:0;
+      const pct=((s.score-minScore)/scoreRange)*100;
       return `<tr>
         <td style="color:var(--text-tertiary)">${i+1}</td>
         <td><strong>${s.name||s.symbol}</strong> <span style="color:var(--text-tertiary);font-size:0.7rem">${s.symbol}</span></td>
         <td class="text-right">${fmt(s.close)}</td>
         <td class="text-right ${s.momentum>=0?'text-profit':'text-loss'}">${(s.momentum*100).toFixed(1)}%</td>
-        <td class="text-right">${(s.volatility*100).toFixed(2)}%</td>
-        <td class="text-right">${(s.avg_volume/10000).toFixed(0)}만</td>
+        <td class="text-right ${s.sharpe>=0?'text-profit':'text-loss'}">${s.sharpe.toFixed(2)}</td>
+        <td class="text-right">${s.avg_turnover>=1e8?(s.avg_turnover/1e8).toFixed(1)+'억':(s.avg_turnover/1e4).toFixed(0)+'만'}</td>
         <td class="text-right">${s.volume_surge.toFixed(1)}x</td>
         <td class="text-right">${(s.atr_pct*100).toFixed(2)}%</td>
-        <td class="text-right">${s.rsi!==null?s.rsi.toFixed(0):'-'}</td>
+        <td class="text-right">${s.rsi!=null?s.rsi.toFixed(0):'-'}</td>
         <td class="text-right">${s.score.toFixed(3)}<span class="score-bar"><span class="score-fill" style="width:${pct}%"></span></span></td>
       </tr>`;
     }).join('');
