@@ -406,7 +406,7 @@ async def run() -> None:
     db_url = settings.get("database_url", "")
     if db_url:
         from scalpy.data.repository import TradeRepository
-        trade_repo = TradeRepository(db_url)
+        trade_repo = TradeRepository(db_url, mock=mock)
         trade_repo.create_tables()
     else:
         trade_repo = None

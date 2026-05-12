@@ -639,7 +639,7 @@ async function stopWithConfirm(){
   const btn=document.getElementById('btn-stop');btn.classList.add('loading');btn.textContent='정지 중...';
   try{
     await doAction('stop',true);
-    if(_posCount>0){btn.textContent='청산 중';await doAction('liquidate',true);}
+    toast('퀀트 엔진 정지 (포지션 유지)','success');
   }finally{btn.classList.remove('loading');btn.textContent='정지';}
 }
 

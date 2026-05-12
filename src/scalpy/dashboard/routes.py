@@ -98,10 +98,36 @@ async def _sync_trades_now() -> None:
         trades = await broker.get_trade_history()
         if trades:
             _trade_repo_ref.sync_trades(trades)
+        await _refresh_pnl_cache()
         if _sse:
             _sse.broadcast("state", _build_sse_state())
     except Exception as e:
         logger.error("routes.trade_sync_failed", error=str(e))
+
+
+async def _refresh_pnl_cache() -> None:
+    """실거래: KIS 기간손익 API에서 실현손익/수수료를 가져와 캐싱."""
+    if not _state or not _engine_ref:
+        return
+    broker = _engine_ref._broker
+    mock = settings.get("mock", True)
+    if mock:
+        return
+    try:
+        records = await broker.get_period_pnl()
+        if not records:
+            return
+        total_pnl = 0
+        total_fees = 0
+        for r in records:
+            pnl_str = r.get("pnl", "")
+            if pnl_str:
+                total_pnl += int(pnl_str)
+            total_fees += r.get("fee", 0)
+        _state.last_daily_pnl = str(total_pnl)
+        _state.last_daily_fees = str(total_fees)
+    except Exception as e:
+        logger.warning("routes.pnl_cache_failed", error=str(e))
 
 
 def _build_sse_state() -> dict[str, Any]:
@@ -123,11 +149,18 @@ def _build_sse_state() -> dict[str, Any]:
                 "strategy": p.strategy,
             })
 
+    daily_pnl = "0"
     total_fees = "0"
     trade_count = 0
+    if _state and _state.last_daily_pnl:
+        daily_pnl = _state.last_daily_pnl
+        total_fees = _state.last_daily_fees or "0"
     if _trade_repo_ref:
         try:
-            total_fees = str(_trade_repo_ref.get_daily_fees())
+            if not daily_pnl or daily_pnl == "0":
+                daily_pnl = str(_trade_repo_ref.get_daily_pnl())
+            if not total_fees or total_fees == "0":
+                total_fees = str(_trade_repo_ref.get_daily_fees())
             trade_count = _trade_repo_ref.get_daily_trade_count()
         except Exception:
             pass
@@ -137,7 +170,7 @@ def _build_sse_state() -> dict[str, Any]:
             "running": _engine_ref._running if _engine_ref else False,
             "balance": _state.last_api_balance if _state else "-",
             "prev_balance": _state.last_prev_balance if _state else "",
-            "daily_pnl": str(_trade_repo_ref.get_daily_pnl()) if _trade_repo_ref else "0",
+            "daily_pnl": daily_pnl,
             "total_fees": total_fees,
             "trade_count": trade_count,
             "last_tick_at": _state.last_tick_at if _state else "",
@@ -171,11 +204,18 @@ async def get_status() -> dict[str, Any]:
     strategy_names = {s.name: s.display_name for s in _registry_ref.all() if s.name in _SCALPING_STRATEGIES} if _registry_ref else {}
     strategy_enabled = {s.name: s.enabled for s in _registry_ref.all() if s.name in _SCALPING_STRATEGIES} if _registry_ref else {}
     pos_count = len(_engine_ref.positions.all()) if _engine_ref else 0
+    daily_pnl = "0"
     total_fees = "0"
     trade_count = 0
+    if _state and _state.last_daily_pnl:
+        daily_pnl = _state.last_daily_pnl
+        total_fees = _state.last_daily_fees or "0"
     if _trade_repo_ref:
         try:
-            total_fees = str(_trade_repo_ref.get_daily_fees())
+            if not daily_pnl or daily_pnl == "0":
+                daily_pnl = str(_trade_repo_ref.get_daily_pnl())
+            if not total_fees or total_fees == "0":
+                total_fees = str(_trade_repo_ref.get_daily_fees())
             trade_count = _trade_repo_ref.get_daily_trade_count()
         except Exception:
             pass
@@ -184,7 +224,7 @@ async def get_status() -> dict[str, Any]:
         "running": _engine_ref._running if _engine_ref else False,
         "balance": _state.last_api_balance if _state else "-",
         "prev_balance": _state.last_prev_balance if _state else "",
-        "daily_pnl": str(_trade_repo_ref.get_daily_pnl()) if _trade_repo_ref else "0",
+        "daily_pnl": daily_pnl,
         "total_fees": total_fees,
         "trade_count": trade_count,
         "last_tick_at": _state.last_tick_at if _state else "",
@@ -282,6 +322,7 @@ async def get_balance() -> dict[str, Any]:
         if _state:
             _state.last_api_balance = api_balance
             _state.last_prev_balance = prev_balance
+        await _refresh_pnl_cache()
         return {"balance": api_balance, "prev_balance": prev_balance}
     except Exception as e:
         logger.error("api.balance_failed", error=str(e))

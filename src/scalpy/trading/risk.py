@@ -72,10 +72,25 @@ class RiskManager:
 
         return True
 
-    def get_max_position_size(self, symbol: str, balance: Decimal, price: Decimal) -> int:
+    def get_max_position_size(
+        self,
+        symbol: str,
+        balance: Decimal,
+        price: Decimal,
+        total_asset: Decimal | None = None,
+    ) -> int:
         if price <= 0:
             return 0
-        max_cost = balance * Decimal(str(self.max_position_ratio))
-        by_ratio = int(max_cost / price)
+
+        if total_asset and total_asset > 0:
+            per_slot = total_asset / Decimal(str(self.max_open_positions))
+            max_cost = min(per_slot, balance)
+        else:
+            max_cost = balance * Decimal(str(self.max_position_ratio))
+
+        cap = balance * Decimal(str(self.max_position_ratio))
+        max_cost = min(max_cost, cap)
+
+        by_cost = int(max_cost / price)
         affordable = int(balance / price)
-        return min(affordable, by_ratio, self.max_position_size)
+        return min(affordable, by_cost, self.max_position_size)

@@ -37,6 +37,8 @@ class DashboardState:
     last_tick_at: str = ""
     last_api_balance: str = "-"
     last_prev_balance: str = ""
+    last_daily_pnl: str = ""
+    last_daily_fees: str = ""
 
     def register_handlers(self, bus: EventBus) -> None:
         bus.subscribe("order.filled", self._on_order_filled)

@@ -1,7 +1,7 @@
 [default]
 # 모의투자 모드 (true: 모의투자, false: 실거래)
 # 실거래 전환은 이 파일에서만 가능 (CLI 인자 불가)
-mock = true
+mock = false
 # PostgreSQL 연결 문자열 (docker-compose 기본값)
 database_url = "postgresql://scalpy:scalpy@localhost:5432/scalpy"
 
@@ -35,6 +35,8 @@ max_position_size = 100
 max_position_ratio = 0.3
 # 동시 보유 최대 포지션 수 (초과 시 신규 매수 차단)
 max_open_positions = 3
+# 장 마감 시 자동 청산 (true: 스캘핑 기본, false: 퀀트 오버나이트 보유)
+market_close_liquidate = false
 # 손절 비율 (0.003 = 0.3%, 평균단가 대비 하락 시 자동 청산)
 stop_loss_ratio = 0.02
 # 익절 비율 (0.015 = 1.5%, 평균단가 대비 상승 시 자동 청산)

@@ -305,7 +305,13 @@ class TradingEngine:
                 return
 
         balance = await self.get_cached_balance()
-        qty = self._risk.get_max_position_size(signal.symbol, balance, signal.price)
+        positions_value = sum(
+            p.current_price * p.quantity for p in self.positions.all()
+        )
+        total_asset = balance + positions_value
+        qty = self._risk.get_max_position_size(
+            signal.symbol, balance, signal.price, total_asset=total_asset,
+        )
 
         sell_pos: Position | None = None
         if signal.side == Side.SELL:
@@ -395,6 +401,13 @@ class TradingEngine:
             return
         if self._market_close_done:
             return
+
+        from scalpy.config import settings
+        if not settings.get("trading.market_close_liquidate", True):
+            self._market_close_done = True
+            logger.info("engine.market_close_hold", count=len(self.positions.all()))
+            return
+
         positions = list(self.positions.all())
         if not positions:
             return
