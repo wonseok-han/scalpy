@@ -58,6 +58,10 @@ class TradingEngine:
         self._sync_running = False
         self._active_symbols: set[str] = set()
         self._performance = PerformanceTracker()
+        self._trade_repo: Any = None
+
+    def set_trade_repo(self, repo: Any) -> None:
+        self._trade_repo = repo
 
     def set_event_bus(self, bus: EventBus) -> None:
         self._bus = bus
@@ -95,6 +99,15 @@ class TradingEngine:
             self.positions.remove(sym)
 
         self._last_sync_at = time.monotonic()
+
+        if self._trade_repo:
+            try:
+                db_times = self._trade_repo.get_open_position_times()
+                for pos in self.positions.all():
+                    if pos.symbol in db_times:
+                        pos.opened_at = db_times[pos.symbol]
+            except Exception:
+                pass
 
         if self._running:
             for pos in self.positions.all():
@@ -371,6 +384,11 @@ class TradingEngine:
                     },
                 )
                 if result.side == Side.BUY:
+                    if self._trade_repo:
+                        try:
+                            self._trade_repo.save_position_open(result.symbol, result.strategy)
+                        except Exception:
+                            pass
                     await self._bus.emit(
                         "position.opened",
                         {
@@ -384,7 +402,12 @@ class TradingEngine:
                     self._closed_symbols[result.symbol] = time.monotonic()
                     if sell_pos:
                         pnl = (result.price - sell_pos.avg_price) * result.quantity
-                        self._performance.record_trade(result.strategy, pnl)
+                        self._performance.record_trade(result.strategy, pnl, symbol=result.symbol)
+                    if self._trade_repo:
+                        try:
+                            self._trade_repo.close_position(result.symbol)
+                        except Exception:
+                            pass
                     await self._bus.emit(
                         "position.closed",
                         {
@@ -472,7 +495,12 @@ class TradingEngine:
             self.positions.update_on_fill(result)
             self._closed_symbols[pos.symbol] = time.monotonic()
             pnl = (result.price - pos.avg_price) * result.quantity
-            self._performance.record_trade(pos.strategy, pnl)
+            self._performance.record_trade(pos.strategy, pnl, symbol=pos.symbol)
+            if self._trade_repo:
+                try:
+                    self._trade_repo.close_position(pos.symbol)
+                except Exception:
+                    pass
             logger.info(
                 "engine.position_force_closed", symbol=pos.symbol, reason=reason
             )

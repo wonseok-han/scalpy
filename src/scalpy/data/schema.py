@@ -70,22 +70,17 @@ class PositionRow(Base):
     )
 
 
-class StrategyResultRow(Base):
-    __tablename__ = "strategy_results"
+class StrategyTradeLog(Base):
+    __tablename__ = "strategy_trade_log"
 
     id: Mapped[uuid.UUID] = mapped_column(
         sa.Uuid, primary_key=True, default=uuid.uuid4
     )
     strategy: Mapped[str] = mapped_column(sa.String(50))
     symbol: Mapped[str] = mapped_column(sa.String(20))
-    total_trades: Mapped[int] = mapped_column(default=0)
-    win_count: Mapped[int] = mapped_column(default=0)
-    loss_count: Mapped[int] = mapped_column(default=0)
-    total_pnl: Mapped[float] = mapped_column(sa.Numeric(15, 2), default=0)
-    max_drawdown: Mapped[float] = mapped_column(sa.Numeric(15, 2), default=0)
-    win_rate: Mapped[float] = mapped_column(sa.Numeric(5, 2), default=0)
-    date: Mapped[sa.Date] = mapped_column(sa.Date)
-    created_at: Mapped[sa.DateTime] = mapped_column(
+    pnl: Mapped[float] = mapped_column(sa.Numeric(15, 2))
+    mock: Mapped[bool] = mapped_column(sa.Boolean, default=True, server_default=sa.text("true"))
+    closed_at: Mapped[sa.DateTime] = mapped_column(
         sa.DateTime(timezone=True), server_default=sa.func.now()
     )
 
@@ -117,5 +112,6 @@ sa.Index("idx_trades_symbol", TradeRow.symbol)
 sa.Index("idx_trades_order_date", TradeRow.order_date)
 sa.Index("idx_trades_side", TradeRow.side)
 sa.Index("idx_positions_symbol", PositionRow.symbol)
-sa.Index("idx_strategy_results_date", StrategyResultRow.date)
+sa.Index("idx_strategy_trade_log_strategy", StrategyTradeLog.strategy)
+sa.Index("idx_strategy_trade_log_mock", StrategyTradeLog.mock)
 sa.Index("idx_ohlcv_symbol_interval_dt", OhlcvRow.symbol, OhlcvRow.interval, OhlcvRow.dt)

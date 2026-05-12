@@ -5,7 +5,7 @@ import structlog
 from sqlalchemy import create_engine, func, inspect, select, text
 from sqlalchemy.orm import Session
 
-from scalpy.data.schema import Base, TradeRow
+from scalpy.data.schema import Base, PositionRow, StrategyTradeLog, TradeRow
 
 logger = structlog.get_logger()
 
@@ -221,6 +221,65 @@ class TradeRepository:
                 )
             )
             return int(result or 0)
+
+    def record_strategy_trade(self, strategy: str, symbol: str, pnl: float) -> None:
+        with Session(self._engine) as session:
+            session.add(StrategyTradeLog(
+                strategy=strategy, symbol=symbol, pnl=pnl, mock=self._mock,
+            ))
+            session.commit()
+
+    def get_strategy_trades(self) -> list[dict]:
+        with Session(self._engine) as session:
+            rows = session.scalars(
+                select(StrategyTradeLog)
+                .where(StrategyTradeLog.mock == self._mock)
+                .order_by(StrategyTradeLog.closed_at)
+            ).all()
+            return [
+                {"strategy": r.strategy, "symbol": r.symbol, "pnl": float(r.pnl)}
+                for r in rows
+            ]
+
+    def save_position_open(
+        self, symbol: str, strategy: str, opened_at: "datetime | None" = None,
+    ) -> None:
+        from datetime import datetime as dt
+        opened = opened_at or dt.now()
+        with Session(self._engine) as session:
+            existing = session.scalar(
+                select(PositionRow).where(
+                    PositionRow.symbol == symbol,
+                    PositionRow.closed_at.is_(None),
+                )
+            )
+            if existing:
+                return
+            session.add(PositionRow(
+                symbol=symbol, side="buy", quantity=0,
+                avg_price=0, strategy=strategy, opened_at=opened,
+            ))
+            session.commit()
+
+    def close_position(self, symbol: str) -> None:
+        from datetime import datetime as dt
+        with Session(self._engine) as session:
+            row = session.scalar(
+                select(PositionRow).where(
+                    PositionRow.symbol == symbol,
+                    PositionRow.closed_at.is_(None),
+                )
+            )
+            if row:
+                row.closed_at = dt.now()
+                session.commit()
+
+    def get_open_position_times(self) -> dict[str, "datetime"]:
+        with Session(self._engine) as session:
+            rows = session.scalars(
+                select(PositionRow).where(PositionRow.closed_at.is_(None))
+            ).all()
+            return {r.symbol: r.opened_at for r in rows}
 
     def get_trades_today(self, day: date | None = None) -> list[dict]:
         day_str = (day or date.today()).strftime("%Y%m%d")

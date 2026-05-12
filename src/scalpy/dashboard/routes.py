@@ -71,6 +71,10 @@ def init_routes(
     _registry_ref = registry
     _trade_repo_ref = trade_repo
 
+    if engine and trade_repo:
+        engine.set_trade_repo(trade_repo)
+        engine._performance.set_repo(trade_repo)
+
     if bus:
         for event in _SSE_EVENTS:
             bus.subscribe(event, _on_state_change)
