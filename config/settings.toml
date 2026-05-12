@@ -41,6 +41,8 @@ market_close_liquidate = false
 stop_loss_ratio = 0.02
 # 익절 비율 (0.015 = 1.5%, 평균단가 대비 상승 시 자동 청산)
 take_profit_ratio = 0.03
+# 강제 청산 분할 매도 횟수 (1 = 전량 일괄, 3 = 3분할 매도, 슬리피지 방지)
+force_close_splits = 3
 # 횡보 청산: N시간 보유 후 수익률이 ±threshold 이내이면 자동 청산 (0 = 비활성화)
 stagnation_hours = 3
 # 횡보 판정 임계값 (0.005 = ±0.5% 이내이면 횡보로 판정)
