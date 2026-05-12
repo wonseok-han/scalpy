@@ -469,7 +469,7 @@ class TradingEngine:
 
     async def _force_close(self, pos: Position, reason: str = "") -> None:
         from scalpy.config import settings
-        if reason == "stop_loss":
+        if reason == "stop_loss" or not self._trade_repo:
             splits = 1
         else:
             splits = max(1, settings.get("trading.force_close_splits", 1))
