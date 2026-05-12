@@ -26,6 +26,7 @@ _RISK_CHECK_INTERVAL = 10
 _MIN_CONFIDENCE = 0.5
 _REJECTED_COOLDOWN = 60
 _CLOSE_COOLDOWN = 1800
+_SPLIT_SELL_DELAY = 1.0
 _MIN_PROFIT_RATIO = Decimal("0.005")
 _KST = zoneinfo.ZoneInfo("Asia/Seoul")
 _CUTOFF_BUY = dt_time(15, 15)
@@ -467,42 +468,81 @@ class TradingEngine:
             await self._force_close(pos, reason="stagnation")
 
     async def _force_close(self, pos: Position, reason: str = "") -> None:
-        signal = Signal(
-            symbol=pos.symbol,
-            side=Side.SELL,
-            strategy=pos.strategy,
-            price=pos.current_price,
-            quantity=pos.quantity,
-            confidence=1.0,
-            timestamp=datetime.now(),
-        )
-        order = self._orders.signal_to_order(signal, pos.quantity)
-        result = await self._orders.submit(order)
-        if result.status == OrderStatus.REJECTED:
-            self.positions.remove(pos.symbol)
-            if "잔고" in result.reject_reason or "매매불가" in result.reject_reason:
-                self._untradeable.add(pos.symbol)
-                logger.warning(
-                    "engine.ghost_position_blocked", symbol=pos.symbol, reason=reason
-                )
-            else:
-                self._rejected_symbols[pos.symbol] = time.monotonic()
-                logger.warning(
-                    "engine.force_close_rejected", symbol=pos.symbol, reason=reason
-                )
-            return
-        if result.status == OrderStatus.FILLED:
-            self.positions.update_on_fill(result)
+        from scalpy.config import settings
+        if reason == "stop_loss":
+            splits = 1
+        else:
+            splits = max(1, settings.get("trading.force_close_splits", 1))
+        remaining = pos.quantity
+        total_pnl = Decimal("0")
+        total_sold = 0
+
+        for i in range(splits):
+            if remaining <= 0:
+                break
+            chunk = remaining // (splits - i)
+            if chunk <= 0:
+                continue
+
+            signal = Signal(
+                symbol=pos.symbol,
+                side=Side.SELL,
+                strategy=pos.strategy,
+                price=pos.current_price,
+                quantity=chunk,
+                confidence=1.0,
+                timestamp=datetime.now(),
+            )
+            order = self._orders.signal_to_order(signal, chunk)
+            result = await self._orders.submit(order)
+
+            if result.status == OrderStatus.REJECTED:
+                if total_sold == 0:
+                    self.positions.remove(pos.symbol)
+                if "잔고" in result.reject_reason or "매매불가" in result.reject_reason:
+                    self._untradeable.add(pos.symbol)
+                    logger.warning(
+                        "engine.ghost_position_blocked", symbol=pos.symbol, reason=reason
+                    )
+                else:
+                    self._rejected_symbols[pos.symbol] = time.monotonic()
+                    logger.warning(
+                        "engine.force_close_rejected", symbol=pos.symbol, reason=reason
+                    )
+                break
+
+            if result.status == OrderStatus.FILLED:
+                self.positions.update_on_fill(result)
+                total_pnl += (result.price - pos.avg_price) * result.quantity
+                total_sold += result.quantity
+                remaining -= result.quantity
+                if self._bus:
+                    await self._bus.emit(
+                        "order.filled",
+                        {
+                            "symbol": result.symbol,
+                            "side": result.side.value,
+                            "price": str(result.price),
+                            "qty": result.quantity,
+                            "strategy": reason or result.strategy,
+                        },
+                    )
+
+            if remaining > 0 and i < splits - 1:
+                await asyncio.sleep(_SPLIT_SELL_DELAY)
+
+        if total_sold > 0:
             self._closed_symbols[pos.symbol] = time.monotonic()
-            pnl = (result.price - pos.avg_price) * result.quantity
-            self._performance.record_trade(pos.strategy, pnl, symbol=pos.symbol)
+            self._performance.record_trade(pos.strategy, total_pnl, symbol=pos.symbol)
             if self._trade_repo:
                 try:
                     self._trade_repo.close_position(pos.symbol)
                 except Exception:
                     pass
             logger.info(
-                "engine.position_force_closed", symbol=pos.symbol, reason=reason
+                "engine.position_force_closed",
+                symbol=pos.symbol, reason=reason,
+                splits=splits, sold=total_sold,
             )
             if self._bus:
                 await self._bus.emit(
@@ -516,20 +556,10 @@ class TradingEngine:
                     },
                 )
                 await self._bus.emit(
-                    "order.filled",
-                    {
-                        "symbol": result.symbol,
-                        "side": result.side.value,
-                        "price": str(result.price),
-                        "qty": result.quantity,
-                        "strategy": reason or result.strategy,
-                    },
-                )
-                await self._bus.emit(
                     "position.closed",
                     {
                         "symbol": pos.symbol,
-                        "qty": pos.quantity,
+                        "qty": total_sold,
                         "reason": reason,
                     },
                 )
