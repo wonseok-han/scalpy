@@ -1,3 +1,4 @@
+from datetime import datetime
 from decimal import Decimal
 
 import structlog
@@ -15,12 +16,16 @@ class RiskManager:
         max_position_size: int = 100,
         max_open_positions: int = 3,
         max_position_ratio: float = 0.3,
+        stagnation_hours: float = 0,
+        stagnation_threshold: float = 0.005,
     ) -> None:
         self.stop_loss_ratio = Decimal(str(stop_loss_ratio))
         self.take_profit_ratio = Decimal(str(take_profit_ratio))
         self.max_position_size = max_position_size
         self.max_open_positions = max_open_positions
         self.max_position_ratio = max_position_ratio
+        self.stagnation_hours = stagnation_hours
+        self.stagnation_threshold = Decimal(str(stagnation_threshold))
 
     def check_stop_loss(self, position: Position, override_ratio: Decimal | None = None) -> bool:
         if position.quantity == 0:
@@ -47,6 +52,23 @@ class RiskManager:
                 "risk.take_profit_triggered",
                 symbol=position.symbol,
                 gain_ratio=str(gain_ratio),
+            )
+        return triggered
+
+    def check_stagnation(self, position: Position) -> bool:
+        if self.stagnation_hours <= 0 or position.quantity == 0:
+            return False
+        elapsed = (datetime.now() - position.opened_at).total_seconds() / 3600
+        if elapsed < self.stagnation_hours:
+            return False
+        change = abs(position.current_price - position.avg_price) / position.avg_price
+        triggered = change <= self.stagnation_threshold
+        if triggered:
+            logger.info(
+                "risk.stagnation_triggered",
+                symbol=position.symbol,
+                hours=round(elapsed, 1),
+                change=str(change),
             )
         return triggered
 

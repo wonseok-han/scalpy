@@ -440,6 +440,8 @@ class TradingEngine:
             await self._force_close(pos, reason="stop_loss")
         elif self._risk.check_take_profit(pos, tp_ratio):
             await self._force_close(pos, reason="take_profit")
+        elif self._risk.check_stagnation(pos):
+            await self._force_close(pos, reason="stagnation")
 
     async def _force_close(self, pos: Position, reason: str = "") -> None:
         signal = Signal(

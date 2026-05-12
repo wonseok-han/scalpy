@@ -41,6 +41,10 @@ market_close_liquidate = false
 stop_loss_ratio = 0.02
 # 익절 비율 (0.015 = 1.5%, 평균단가 대비 상승 시 자동 청산)
 take_profit_ratio = 0.03
+# 횡보 청산: N시간 보유 후 수익률이 ±threshold 이내이면 자동 청산 (0 = 비활성화)
+stagnation_hours = 3
+# 횡보 판정 임계값 (0.005 = ±0.5% 이내이면 횡보로 판정)
+stagnation_threshold = 0.005
 
 [default.screening]
 # 자동 종목 스크리닝 활성화 (false: settings.toml의 symbols 사용)
@@ -93,7 +97,7 @@ chat_id = ""
 [default.strategies]
 # 스캘핑 활성 전략 (UI에서 런타임 토글 가능)
 # 사용 가능: ma_cross, bollinger, rsi, orderbook, vwap
-scalping_enabled = ["ma_cross"]
+scalping_enabled = []
 # 퀀트 활성 전략
 # 사용 가능: momentum, mean_reversion, factor
 quant_enabled = ["factor"]
@@ -169,7 +173,7 @@ sell_threshold = 0.55
 weight_momentum = 0.4
 weight_volume = 0.2
 weight_orderbook = 0.3
-cooldown_seconds = 1800
+cooldown_seconds = 600
 # 복합 팩터 — 가장 넓은 손절/익절
 stop_loss_ratio = 0.025
 take_profit_ratio = 0.04
