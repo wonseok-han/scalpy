@@ -1,0 +1,54 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+*.egg
+dist/
+build/
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Environment / Secrets
+.env
+.secrets.toml
+config/.secrets.toml
+config/.token.json
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# Database
+*.db
+*.sqlite3
+.data/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Streamlit (legacy)
+.streamlit/secrets.toml
+
+# Logs
+*.log
+logs/
+
+# bkit
+.bkit/

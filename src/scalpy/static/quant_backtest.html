@@ -1,0 +1,609 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Scalpy Quant Backtest</title>
+<link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
+<link href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css" rel="stylesheet">
+<link rel="stylesheet" href="/static/css/common.css">
+<style>
+/* ── Quant Backtest: purple accent override ── */
+:root { --accent: #8B5CF6; --accent-soft: rgba(139,92,246,0.12); --blue: #3B82F6; --blue-soft: rgba(59,130,246,0.12); }
+.brand-logo { background: linear-gradient(135deg, #8B5CF6, #EC4899); }
+.nav-item.active::after { background: var(--accent); }
+
+/* ── Page-specific ── */
+.container { max-width: 1200px; }
+.header-top, .nav-bar { max-width: 1200px; }
+.btn-secondary { border-color: rgba(139,92,246,0.3); color: var(--accent); }
+.btn-secondary:hover { background: var(--accent-soft); }
+.pnl-chip.neutral { background: var(--bg-hover); color: var(--text-secondary); }
+.rank-badge.top { background: var(--accent-soft); color: var(--accent); }
+#result-section, #optimize-result, #perf-section { display: none; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div class="header-top">
+    <div class="brand">
+      <div class="brand-logo">Q</div>
+      <div>
+        <h1>Quant Backtest</h1>
+        <span class="brand-sub">OHLCV 일봉 기반 퀀트 전략 백테스트</span>
+      </div>
+    </div>
+  </div>
+  <nav class="nav-bar">
+    <a href="/" class="nav-item">라이브</a>
+    <a href="/quant" class="nav-item">퀀트</a>
+    <span class="nav-sep"></span>
+    <a href="/scalping/backtest" class="nav-item">스캘핑 백테스트</a>
+    <a href="/quant/backtest" class="nav-item active">퀀트 백테스트</a>
+  </nav>
+</div>
+
+<div class="container">
+
+  <!-- ═══════════════════════════════════════════ -->
+  <!-- SECTION 1: 데이터 수집                      -->
+  <!-- ═══════════════════════════════════════════ -->
+  <div class="section-title">데이터 수집</div>
+
+  <div class="card">
+    <div class="card-header">
+      <span class="card-title">OHLCV 데이터 수집</span>
+    </div>
+    <div class="card-body">
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">종목 코드</label>
+          <input type="text" class="form-input" id="manual-symbols" placeholder="005930,000660" style="width:200px">
+        </div>
+        <div class="form-group">
+          <label class="form-label">수집 기간</label>
+          <select class="form-input" id="fetch-period">
+            <option value="1mo">1개월</option>
+            <option value="3mo" selected>3개월</option>
+            <option value="6mo">6개월</option>
+            <option value="1y">1년</option>
+          </select>
+        </div>
+        <button class="btn btn-primary" onclick="fetchManual()" id="btn-fetch" style="align-self:flex-end">수집</button>
+        <span class="status-msg" id="fetch-status"></span>
+      </div>
+      <div class="progress-bar" id="fetch-progress"><div class="bar indeterminate"></div></div>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════ -->
+  <!-- SECTION 2: 백테스트                         -->
+  <!-- ═══════════════════════════════════════════ -->
+  <div class="section-title">백테스트</div>
+
+  <div class="card">
+    <div class="card-header">
+      <span class="card-title">저장된 종목 (일봉)</span>
+      <span class="card-badge" id="db-badge">-</span>
+    </div>
+    <div class="card-body">
+      <div class="actions-row" style="margin-top:0">
+        <button class="btn btn-sm" onclick="selectAllDb()">전체</button>
+        <button class="btn btn-sm" onclick="selectNoneDb()">해제</button>
+        <button class="btn btn-sm" onclick="loadSymbols()">새로고침</button>
+      </div>
+      <input type="text" id="db-search" placeholder="종목명/코드 검색 (쉼표 구분 코드 붙여넣기 가능)" oninput="onDbSearch()" style="width:100%;margin-top:8px;padding:7px 10px;background:var(--bg-elevated);border:1px solid var(--border);border-radius:6px;color:var(--text-primary);font-size:0.82rem;outline:none">
+      <div id="db-chips" class="stock-chips" style="margin-top:10px">
+        <span style="color:var(--text-tertiary);font-size:0.8rem">로딩 중...</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-header">
+      <span class="card-title">파라미터 설정</span>
+      <span class="card-badge" id="selected-badge">0종목 선택됨</span>
+    </div>
+    <div class="card-body">
+      <div class="form-grid">
+        <div class="form-group">
+          <label class="form-label">초기 자금</label>
+          <input type="number" class="form-input" id="balance" value="1000000" step="100000">
+        </div>
+        <div class="form-group">
+          <label class="form-label">손절 비율</label>
+          <input type="number" class="form-input" id="stop-loss" value="0.03" step="0.005" min="0">
+        </div>
+        <div class="form-group">
+          <label class="form-label">익절 비율</label>
+          <input type="number" class="form-input" id="take-profit" value="0.05" step="0.005" min="0">
+        </div>
+        <div class="form-group">
+          <label class="form-label">종목당 최대 수량</label>
+          <input type="number" class="form-input" id="max-qty" value="200" min="1">
+        </div>
+        <div class="form-group">
+          <label class="form-label">최대 포지션 수</label>
+          <input type="number" class="form-input" id="max-positions" value="5" min="1">
+        </div>
+        <div class="form-group">
+          <label class="form-label">백테스트 기간</label>
+          <select class="form-input" id="period">
+            <option value="1mo">1개월</option>
+            <option value="3mo" selected>3개월</option>
+            <option value="6mo">6개월</option>
+            <option value="1y">1년</option>
+          </select>
+        </div>
+      </div>
+      <div style="margin-top:14px">
+        <label class="form-label">퀀트 전략 선택</label>
+        <div id="strategy-chips" class="stock-chips" style="margin-top:6px">
+          <span style="color:var(--text-tertiary);font-size:0.8rem">로딩 중...</span>
+        </div>
+        <div id="strategy-params" style="margin-top:12px"></div>
+      </div>
+      <div class="actions-row">
+        <button class="btn btn-primary" onclick="doRun()" id="btn-run">백테스트 실행</button>
+        <button class="btn btn-optimize" onclick="doOptimize()" id="btn-optimize">최적 파라미터 탐색</button>
+        <span class="status-msg" id="bt-status"></span>
+      </div>
+      <div class="progress-bar" id="bt-progress"><div class="bar indeterminate"></div></div>
+    </div>
+  </div>
+
+  <!-- Result -->
+  <div id="result-section">
+    <div class="card">
+      <div class="card-header">
+        <span class="card-title">백테스트 결과</span>
+        <span class="card-badge" id="result-period">-</span>
+      </div>
+      <div class="card-body">
+        <div class="result-grid" id="result-metrics"></div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-header">
+        <span class="card-title">거래 요약</span>
+        <span class="card-badge" id="result-trade-count">-</span>
+      </div>
+      <div class="card-body" style="padding:0">
+        <div class="result-grid" style="padding:14px 22px" id="trade-metrics"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Strategy Performance -->
+  <div id="perf-section">
+    <div class="card">
+      <div class="card-header">
+        <span class="card-title">전략별 성과</span>
+      </div>
+      <div class="card-body" style="padding:0;overflow-x:auto">
+        <table>
+          <thead><tr>
+            <th>전략</th>
+            <th class="text-right">거래수</th>
+            <th class="text-right">승/패</th>
+            <th class="text-right">승률</th>
+            <th class="text-right">총 손익</th>
+            <th class="text-right">평균 손익</th>
+            <th class="text-right">MDD</th>
+          </tr></thead>
+          <tbody id="perf-table"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- Optimization -->
+  <div id="optimize-result">
+    <div class="card">
+      <div class="card-header">
+        <span class="card-title">최적화 결과</span>
+        <span class="card-badge" id="opt-badge">-</span>
+      </div>
+      <div class="card-body" style="padding:0">
+        <div class="scroll-area">
+          <table>
+            <thead><tr>
+              <th class="text-center">#</th>
+              <th class="text-right">손절</th>
+              <th class="text-right">익절</th>
+              <th class="text-right">포지션</th>
+              <th>전략 파라미터</th>
+              <th class="text-right">손익</th>
+              <th class="text-right">수익률</th>
+              <th class="text-right">승률</th>
+              <th class="text-right">거래수</th>
+              <th class="text-right">수수료</th>
+              <th class="text-center">복사</th>
+            </tr></thead>
+            <tbody id="opt-table"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<script src="/static/js/common.js"></script>
+<script>
+const pctStr = v => (v >= 0 ? '+' : '') + v + '%';
+
+let _dbStocks = [];
+let _dbSelected = new Set();
+let _strategies = [];
+let _stratEnabled = new Set();
+
+function setFetchStatus(msg) { document.getElementById('fetch-status').textContent = msg; }
+function setBtStatus(msg) { document.getElementById('bt-status').textContent = msg; }
+
+function setProgress(id, active, det) {
+  const el = document.getElementById(id);
+  const bar = el.querySelector('.bar');
+  el.className = active ? 'progress-bar active' : 'progress-bar';
+  if (det !== undefined) { bar.className = 'bar'; bar.style.width = det + '%'; }
+  else { bar.className = 'bar indeterminate'; bar.style.width = ''; }
+}
+
+function setBtButtons(d) {
+  document.getElementById('btn-run').disabled = d;
+  document.getElementById('btn-optimize').disabled = d;
+}
+
+// ── DB Stocks ──
+function getFilteredDbStocks() {
+  const q = (document.getElementById('db-search')?.value || '').trim();
+  if (!q) return _dbStocks;
+  const codes = q.includes(',') ? q.split(',').map(c => c.trim()).filter(Boolean) : null;
+  if (codes) return _dbStocks.filter(s => codes.includes(s.symbol));
+  const lq = q.toLowerCase();
+  return _dbStocks.filter(s => (s.name || '').toLowerCase().includes(lq) || s.symbol.includes(q));
+}
+
+function onDbSearch() {
+  const filtered = getFilteredDbStocks();
+  _dbSelected = new Set(filtered.map(s => s.symbol));
+  renderDbChips();
+}
+
+function renderDbChips() {
+  const el = document.getElementById('db-chips');
+  const filtered = getFilteredDbStocks();
+  document.getElementById('db-badge').textContent = _dbStocks.length + '종목';
+  document.getElementById('selected-badge').textContent = _dbSelected.size + '/' + filtered.length + '종목';
+  if (!_dbStocks.length) {
+    el.innerHTML = '<span style="color:var(--text-tertiary);font-size:0.8rem">OHLCV 데이터 없음 — 위에서 종목 코드를 입력하고 수집하세요</span>';
+    return;
+  }
+  if (!filtered.length) {
+    el.innerHTML = '<span style="color:var(--text-tertiary);font-size:0.8rem">검색 결과 없음</span>';
+    return;
+  }
+  el.innerHTML = filtered.map(s => {
+    const sel = _dbSelected.has(s.symbol) ? ' selected' : '';
+    return `<span class="stock-chip${sel}" onclick="toggleDb('${s.symbol}')">
+      <span class="chip-name">${s.name || s.symbol}</span><span class="chip-code">${s.symbol}</span>
+      <span class="chip-vol">${fmt(s.count)}봉 | ${s.min_dt.slice(0,10)} ~ ${s.max_dt.slice(0,10)}</span>
+    </span>`;
+  }).join('');
+}
+
+function toggleDb(sym) { if (_dbSelected.has(sym)) _dbSelected.delete(sym); else _dbSelected.add(sym); renderDbChips(); }
+function selectAllDb() { getFilteredDbStocks().forEach(s => _dbSelected.add(s.symbol)); renderDbChips(); }
+function selectNoneDb() { _dbSelected.clear(); renderDbChips(); }
+
+async function loadSymbols() {
+  try {
+    const d = await fetch('/api/quant/backtest/symbols').then(r => r.json());
+    _dbStocks = (d.symbols || []).sort((a, b) => (a.name || a.symbol).localeCompare(b.name || b.symbol, 'ko'));
+    _dbSelected = new Set(_dbStocks.map(s => s.symbol));
+    renderDbChips();
+  } catch {
+    document.getElementById('db-chips').innerHTML = '<span style="color:var(--text-tertiary)">DB 연결 실패</span>';
+  }
+}
+
+// ── Data Fetch ──
+async function fetchManual() {
+  const input = document.getElementById('manual-symbols').value.trim();
+  if (!input) { toast('종목 코드를 입력하세요', 'error'); return; }
+  const syms = input.split(',').map(s => s.trim()).filter(s => s.length === 6);
+  if (!syms.length) { toast('6자리 종목 코드를 입력하세요', 'error'); return; }
+  const period = document.getElementById('fetch-period').value;
+
+  document.getElementById('btn-fetch').disabled = true;
+  setProgress('fetch-progress', true);
+  setFetchStatus(syms.length + '종목 수집 중...');
+
+  try {
+    const d = await fetch('/api/quant/backtest/fetch', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ symbols: syms, interval: '1d', period }),
+    }).then(r => r.json());
+    if (d.error) throw new Error(d.error);
+    setFetchStatus(d.rows_added + '건 수집 완료');
+    toast(d.rows_added + '건 수집 완료', 'success');
+    document.getElementById('manual-symbols').value = '';
+    loadSymbols();
+  } catch (e) {
+    setFetchStatus('수집 실패');
+    toast('수집 실패: ' + e.message, 'error');
+  } finally {
+    document.getElementById('btn-fetch').disabled = false;
+    setProgress('fetch-progress', false);
+  }
+}
+
+// ── Strategies ──
+async function loadStrategies() {
+  try {
+    const d = await fetch('/api/quant/backtest/strategies').then(r => r.json());
+    _strategies = d.strategies || [];
+    _stratEnabled = new Set(_strategies.map(s => s.name));
+    renderStratChips();
+  } catch {
+    document.getElementById('strategy-chips').innerHTML = '<span style="color:var(--text-tertiary)">전략 로딩 실패</span>';
+  }
+}
+
+const _paramLabels = {
+  lookback: '관측 윈도우', volume_multiplier: '거래량 배수', breakout_pct: '돌파 비율',
+  window: '이평 기간', num_std: '표준편차 배수', buy_threshold: '매수 임계값',
+  sell_threshold: '매도 임계값', weight_momentum: '모멘텀 가중치', weight_volume: '거래량 가중치',
+  weight_orderbook: '호가 가중치', cooldown_seconds: '쿨다운(초)',
+  stop_loss_ratio: '전략 손절', take_profit_ratio: '전략 익절',
+};
+
+function toggleStrat(name) { if (_stratEnabled.has(name)) _stratEnabled.delete(name); else _stratEnabled.add(name); renderStratChips(); }
+
+function renderStratChips() {
+  const el = document.getElementById('strategy-chips');
+  el.innerHTML = _strategies.map(s => {
+    const sel = _stratEnabled.has(s.name) ? ' selected' : '';
+    return `<span class="stock-chip${sel}" onclick="toggleStrat('${s.name}')" style="min-width:auto">
+      <span class="chip-name">${s.display_name}</span>
+    </span>`;
+  }).join('');
+  renderStratParams();
+}
+
+function renderStratParams() {
+  const el = document.getElementById('strategy-params');
+  const enabled = _strategies.filter(s => _stratEnabled.has(s.name));
+  if (!enabled.length) { el.innerHTML = ''; return; }
+  el.innerHTML = enabled.map(s => {
+    const fields = Object.entries(s.params).map(([k, v]) => {
+      const label = _paramLabels[k] || k;
+      const step = typeof v === 'number' && !Number.isInteger(v) ? '0.001' : '1';
+      return `<div class="form-group"><label class="form-label">${label}</label><input type="number" class="form-input" id="sp-${s.name}-${k}" value="${v}" step="${step}"></div>`;
+    }).join('');
+    return `<div style="margin-bottom:12px"><div style="font-size:0.78rem;font-weight:600;color:var(--text-secondary);margin-bottom:6px">${s.display_name}</div><div class="form-grid">${fields}</div></div>`;
+  }).join('');
+}
+
+function collectStratParams() {
+  const params = {};
+  for (const s of _strategies) {
+    if (!_stratEnabled.has(s.name)) continue;
+    const p = {};
+    for (const k of Object.keys(s.params)) {
+      const input = document.getElementById(`sp-${s.name}-${k}`);
+      if (input) p[k] = parseFloat(input.value);
+    }
+    if (Object.keys(p).length) params[s.name] = p;
+  }
+  return params;
+}
+
+// ── Backtest Run ──
+async function doRun() {
+  const syms = [..._dbSelected];
+  if (!syms.length) { toast('종목을 선택하세요', 'error'); return; }
+  const strats = [..._stratEnabled];
+  if (!strats.length) { toast('전략을 1개 이상 선택하세요', 'error'); return; }
+
+  setBtButtons(true); setProgress('bt-progress', true); setBtStatus('백테스트 실행 중...');
+  document.getElementById('optimize-result').style.display = 'none';
+
+  try {
+    const d = await fetch('/api/quant/backtest/run', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        symbols: syms, strategies: strats,
+        balance: parseInt(document.getElementById('balance').value) || 1000000,
+        stop_loss: parseFloat(document.getElementById('stop-loss').value) || 0.03,
+        take_profit: parseFloat(document.getElementById('take-profit').value) || 0.05,
+        max_qty: parseInt(document.getElementById('max-qty').value) || 200,
+        max_positions: parseInt(document.getElementById('max-positions').value) || 5,
+        interval: '1d',
+        period: document.getElementById('period').value,
+        strategy_params: collectStratParams(),
+      }),
+    }).then(r => r.json());
+    if (d.error) throw new Error(d.error);
+    showResult(d);
+    setBtStatus('완료'); toast('백테스트 완료', 'success');
+  } catch (e) { setBtStatus('실패'); toast('실패: ' + e.message, 'error'); }
+  finally { setBtButtons(false); setProgress('bt-progress', false); }
+}
+
+// ── Optimization ──
+async function doOptimize() {
+  const syms = [..._dbSelected];
+  if (!syms.length) { toast('종목을 선택하세요', 'error'); return; }
+  const strats = [..._stratEnabled];
+  if (!strats.length) { toast('전략을 1개 이상 선택하세요', 'error'); return; }
+
+  setBtButtons(true); setProgress('bt-progress', true); setBtStatus('최적 파라미터 탐색 중...');
+  document.getElementById('result-section').style.display = 'none';
+  document.getElementById('perf-section').style.display = 'none';
+
+  const pollId = setInterval(async () => {
+    try {
+      const pg = await fetch('/api/quant/backtest/progress').then(r => r.json());
+      if (pg.status === 'optimizing' && pg.total > 0) {
+        const pct = Math.round(pg.current / pg.total * 100);
+        setProgress('bt-progress', true, pct);
+        setBtStatus(`탐색 중... ${pg.current}/${pg.total} (${pct}%)`);
+      } else if (pg.status === 'done') {
+        clearInterval(pollId); setBtButtons(false); setProgress('bt-progress', false);
+        if (pg.results) { showOptResult(pg); setBtStatus(`완료 — ${pg.results.length}개 조합`); toast('탐색 완료', 'success'); }
+      } else if (pg.status === 'error') {
+        clearInterval(pollId); setBtButtons(false); setProgress('bt-progress', false);
+        setBtStatus('탐색 실패'); toast(pg.error || '탐색 실패', 'error');
+      }
+    } catch {}
+  }, 3000);
+
+  try {
+    const d = await fetch('/api/quant/backtest/optimize', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        symbols: syms, strategies: strats,
+        balance: parseInt(document.getElementById('balance').value) || 1000000,
+        max_qty: parseInt(document.getElementById('max-qty').value) || 200,
+        interval: '1d',
+      }),
+    }).then(r => r.json());
+    if (d.error) { clearInterval(pollId); setBtButtons(false); setProgress('bt-progress', false); setBtStatus('실패'); toast(d.error, 'error'); }
+  } catch (e) { clearInterval(pollId); setBtButtons(false); setProgress('bt-progress', false); toast(e.message, 'error'); }
+}
+
+// ── Results ──
+function showResult(r) {
+  document.getElementById('result-section').style.display = 'block';
+  document.getElementById('result-period').textContent = r.period + ' (' + r.interval + ')';
+  document.getElementById('result-trade-count').textContent = r.total_trades + '건';
+  const pnl = r.pnl; const cls = pnl >= 0 ? 'text-profit' : 'text-loss';
+  document.getElementById('result-metrics').innerHTML = `
+    <div class="result-card"><div class="result-label">초기 자금</div><div class="result-value">${fmt(r.initial_balance)}원</div></div>
+    <div class="result-card"><div class="result-label">최종 평가</div><div class="result-value">${fmt(r.total_value)}원</div><div class="result-sub">현금 ${fmt(r.final_balance)} + 보유 ${fmt(r.position_value)}</div></div>
+    <div class="result-card"><div class="result-label">손익</div><div class="result-value ${cls}">${pnlSign(pnl)}원</div><div class="result-sub ${cls}">${pctStr(r.pnl_pct)}</div></div>
+    <div class="result-card"><div class="result-label">수수료</div><div class="result-value">${fmt(r.total_fees)}원</div><div class="result-sub">일봉 ${fmt(r.candles)}개</div></div>`;
+  const wCls = r.win_rate >= 50 ? 'text-profit' : 'text-loss';
+  document.getElementById('trade-metrics').innerHTML = `
+    <div class="result-card"><div class="result-label">총 거래</div><div class="result-value">${r.total_trades}건</div><div class="result-sub">매수 ${r.buy_count} / 매도 ${r.sell_count}</div></div>
+    <div class="result-card"><div class="result-label">승률</div><div class="result-value ${wCls}">${r.win_rate}%</div><div class="result-sub">${r.wins}승 ${r.losses}패</div></div>
+    <div class="result-card"><div class="result-label">미청산</div><div class="result-value">${r.open_positions}건</div></div>
+    <div class="result-card"><div class="result-label">활성 전략</div><div class="result-value" style="font-size:0.85rem">${(r.strategies || []).join(', ')}</div></div>`;
+
+  if (r.strategy_performance && Object.keys(r.strategy_performance).length) {
+    document.getElementById('perf-section').style.display = 'block';
+    document.getElementById('perf-table').innerHTML = Object.entries(r.strategy_performance).map(([k, s]) => {
+      const p = Number(s.total_pnl);
+      return `<tr><td>${k}</td><td class="text-right">${s.trades}</td><td class="text-right">${s.wins}/${s.losses}</td><td class="text-right">${s.win_rate}%</td><td class="text-right ${p >= 0 ? 'text-profit' : 'text-loss'}">${pnlSign(p)}원</td><td class="text-right">${fmt(s.avg_pnl)}원</td><td class="text-right text-loss">${fmt(s.max_drawdown)}원</td></tr>`;
+    }).join('');
+  }
+  document.getElementById('result-section').scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function fmtStratParams(s) {
+  if (!s || !Object.keys(s).length) return '-';
+  return Object.entries(s).map(([n, p]) => {
+    const ps = Object.entries(p).map(([k, v]) => `${k}=${v}`).join(' ');
+    return `<div style="font-size:0.68rem;color:var(--text-secondary)"><b>${n}</b> ${ps}</div>`;
+  }).join('');
+}
+
+let _optResults = [];
+function showOptResult(d) {
+  const results = d.results || [];
+  _optResults = results.slice(0, 30);
+  document.getElementById('optimize-result').style.display = 'block';
+  document.getElementById('opt-badge').textContent = `${results.length}개 조합`;
+  const top = _optResults;
+  document.getElementById('opt-table').innerHTML = top.length ? top.map((r, i) => {
+    const pnl = r.pnl; const cls = pnl >= 0 ? 'up' : 'down'; const rc = i < 3 ? ' top' : '';
+    return `<tr style="cursor:pointer" onclick="applyParams(${r.stop_loss},${r.take_profit},${r.max_positions})">
+      <td class="text-center"><span class="rank-badge${rc}">${i + 1}</span></td>
+      <td class="text-right">${(r.stop_loss * 100).toFixed(1)}%</td>
+      <td class="text-right">${(r.take_profit * 100).toFixed(1)}%</td>
+      <td class="text-right">${r.max_positions}</td>
+      <td style="max-width:200px">${fmtStratParams(r.strategies)}</td>
+      <td class="text-right"><span class="pnl-chip ${cls}">${pnlSign(pnl)}</span></td>
+      <td class="text-right ${pnl >= 0 ? 'text-profit' : 'text-loss'}">${pctStr(r.pnl_pct)}</td>
+      <td class="text-right">${r.win_rate}%</td>
+      <td class="text-right">${r.total_trades}</td>
+      <td class="text-right">${fmt(r.total_fees)}</td>
+      <td class="text-center"><button class="btn" style="padding:2px 8px;font-size:0.65rem" onclick="event.stopPropagation();copyOptJson(${i})">JSON</button></td>
+    </tr>`;
+  }).join('') : '<tr><td colspan="11" style="text-align:center;padding:20px;color:var(--text-tertiary)">수익 조합 없음</td></tr>';
+  document.getElementById('optimize-result').scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function applyParams(sl, tp, mp) {
+  document.getElementById('stop-loss').value = sl;
+  document.getElementById('take-profit').value = tp;
+  document.getElementById('max-positions').value = mp;
+  toast(`손절 ${(sl * 100).toFixed(1)}% / 익절 ${(tp * 100).toFixed(1)}% / 포지션 ${mp} 적용`, 'success');
+}
+function copyOptJson(idx) {
+  const r = _optResults[idx]; if (!r) return;
+  const obj = { risk: { stop_loss_ratio: r.stop_loss, take_profit_ratio: r.take_profit, max_open_positions: r.max_positions } };
+  const stratName = r.strategy || '';
+  obj.strategies = {};
+  if (r.strategies && Object.keys(r.strategies).length) {
+    for (const [name, params] of Object.entries(r.strategies)) {
+      obj.strategies[name] = { enabled: true, params };
+    }
+  } else if (stratName) {
+    obj.strategies[stratName] = { enabled: true };
+  }
+  const text = JSON.stringify(obj, null, 2);
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(() => toast('JSON 복사됨 — 스캘핑/퀀트 페이지에서 붙여넣기', 'success')).catch(() => _fallbackCopy(text));
+  } else {
+    _fallbackCopy(text);
+  }
+}
+function _fallbackCopy(text) {
+  const ta = document.createElement('textarea');
+  ta.value = text; ta.style.cssText = 'position:fixed;left:-9999px';
+  document.body.appendChild(ta); ta.select();
+  try { document.execCommand('copy'); toast('JSON 복사됨 — 스캘핑/퀀트 페이지에서 붙여넣기', 'success'); }
+  catch { toast('복사 실패 — 수동으로 복사하세요', 'error'); console.log(text); }
+  document.body.removeChild(ta);
+}
+
+// ── Resume optimization if running ──
+async function resumeIfRunning() {
+  try {
+    const pg = await fetch('/api/quant/backtest/progress').then(r => r.json());
+    if (pg.status === 'optimizing') {
+      setBtButtons(true); setProgress('bt-progress', true);
+      setBtStatus(`탐색 재연결... ${pg.current || 0}/${pg.total || '?'}`);
+      const pollId = setInterval(async () => {
+        try {
+          const p = await fetch('/api/quant/backtest/progress').then(r => r.json());
+          if (p.status === 'optimizing' && p.total > 0) {
+            const pct = Math.round(p.current / p.total * 100);
+            setProgress('bt-progress', true, pct);
+            setBtStatus(`탐색 중... ${p.current}/${p.total} (${pct}%)`);
+          } else if (p.status === 'done') {
+            clearInterval(pollId); setBtButtons(false); setProgress('bt-progress', false);
+            if (p.results) { showOptResult(p); setBtStatus(`완료 — ${p.results.length}개 조합`); toast('최적화 완료', 'success'); }
+          } else if (p.status === 'error') {
+            clearInterval(pollId); setBtButtons(false); setProgress('bt-progress', false);
+            setBtStatus('탐색 실패'); toast(p.error || '실패', 'error');
+          }
+        } catch {}
+      }, 5000);
+    } else if (pg.status === 'done' && pg.results && pg.results.length) {
+      showOptResult(pg);
+      setBtStatus(`이전 탐색 결과 — ${pg.results.length}개 조합`);
+    }
+  } catch {}
+}
+
+// ── Init ──
+loadSymbols();
+loadStrategies();
+resumeIfRunning();
+</script>
+</body>
+</html>
