@@ -6,249 +6,24 @@
 <title>Scalpy Backtest</title>
 <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
 <link href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css" rel="stylesheet">
+<link rel="stylesheet" href="/static/css/common.css">
 <style>
-:root {
-  --bg-base: #0B0E13;
-  --bg-surface: #13171E;
-  --bg-elevated: #1A1F2B;
-  --bg-hover: #222834;
-  --border: rgba(148,163,184,0.08);
-  --border-hover: rgba(148,163,184,0.15);
-  --text-primary: #E2E8F0;
-  --text-secondary: #94A3B8;
-  --text-tertiary: #64748B;
-  --accent: #3B82F6;
-  --accent-soft: rgba(59,130,246,0.12);
-  --profit: #22C55E;
-  --profit-soft: rgba(34,197,94,0.12);
-  --loss: #EF4444;
-  --loss-soft: rgba(239,68,68,0.12);
-  --warning: #F59E0B;
-  --purple: #A78BFA;
-  --purple-soft: rgba(139,92,246,0.12);
-  --radius-sm: 8px;
-  --radius-md: 12px;
-  --radius-lg: 16px;
-  --shadow-card: 0 1px 3px rgba(0,0,0,0.3), 0 1px 2px rgba(0,0,0,0.2);
-  --font: "Pretendard Variable", Pretendard, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-}
-
-* { margin: 0; padding: 0; box-sizing: border-box; }
-
-body {
-  font-family: var(--font);
-  background: var(--bg-base);
-  color: var(--text-primary);
-  line-height: 1.5;
-  -webkit-font-smoothing: antialiased;
-}
-
-::-webkit-scrollbar { width: 6px; }
-::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: var(--text-tertiary); border-radius: 3px; }
-
-.container { max-width: 1200px; margin: 0 auto; padding: 0 24px 40px; }
-
-.header {
-  position: sticky; top: 0; z-index: 100;
-  background: rgba(11,14,19,0.82);
-  backdrop-filter: blur(20px) saturate(1.4);
-  border-bottom: 1px solid var(--border);
-  padding: 14px 24px; margin-bottom: 24px;
-}
-.header-inner {
-  max-width: 1200px; margin: 0 auto;
-  display: flex; justify-content: space-between; align-items: center;
-}
-.brand { display: flex; align-items: center; gap: 14px; }
-.brand-logo {
-  width: 36px; height: 36px;
-  background: linear-gradient(135deg, #8B5CF6, #EC4899);
-  border-radius: var(--radius-sm);
-  display: flex; align-items: center; justify-content: center;
-  font-weight: 800; font-size: 0.85rem; color: #fff;
-}
-.brand h1 { font-size: 1.1rem; font-weight: 700; }
-.brand-sub { font-size: 0.75rem; color: var(--text-tertiary); }
-.nav-links { display: flex; gap: 8px; }
-.nav-link {
-  padding: 8px 16px; border-radius: var(--radius-sm);
-  font-size: 0.8rem; font-weight: 500; color: var(--text-secondary);
-  text-decoration: none; transition: all 0.2s;
-  border: 1px solid var(--border);
-}
-.nav-link:hover { background: var(--bg-hover); color: var(--text-primary); }
-.nav-link.active { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
-
-.section-title {
-  font-size: 0.7rem; font-weight: 600; text-transform: uppercase;
-  letter-spacing: 1.5px; color: var(--text-tertiary);
-  margin: 28px 0 12px; padding-left: 4px;
-}
-.section-title:first-of-type { margin-top: 0; }
-
-.card {
-  background: var(--bg-surface); border: 1px solid var(--border);
-  border-radius: var(--radius-lg); overflow: hidden; margin-bottom: 16px;
-  transition: border-color 0.2s;
-}
-.card:hover { border-color: var(--border-hover); }
-.card-header {
-  padding: 16px 22px 12px;
-  display: flex; align-items: center; justify-content: space-between;
-  border-bottom: 1px solid var(--border);
-}
-.card-title { font-size: 0.85rem; font-weight: 600; }
-.card-badge {
-  font-size: 0.7rem; font-weight: 500; padding: 3px 8px;
-  border-radius: 6px; background: var(--bg-hover); color: var(--text-tertiary);
-}
-.card-body { padding: 16px 22px; }
-
-.form-row {
-  display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-end;
-}
-.form-group { display: flex; flex-direction: column; gap: 5px; }
-.form-label { font-size: 0.72rem; font-weight: 500; color: var(--text-tertiary); text-transform: uppercase; letter-spacing: 0.5px; }
-.form-input {
-  background: var(--bg-elevated); border: 1px solid var(--border);
-  border-radius: var(--radius-sm); padding: 9px 12px;
-  color: var(--text-primary); font-family: var(--font); font-size: 0.82rem;
-  transition: border-color 0.2s; outline: none; width: 130px;
-}
-.form-input:focus { border-color: var(--accent); }
-.form-input::placeholder { color: var(--text-tertiary); }
+/* ── Backtest: page-specific ── */
+.container { max-width: 1200px; }
+.header-top, .nav-bar { max-width: 1200px; }
 .form-input.wide { width: 180px; }
-
-.btn {
-  padding: 9px 16px; border: 1px solid var(--border-hover);
-  border-radius: var(--radius-sm); background: var(--bg-elevated);
-  color: var(--text-secondary); cursor: pointer; font-family: var(--font);
-  font-size: 0.8rem; font-weight: 500; transition: all 0.2s;
-  display: inline-flex; align-items: center; gap: 6px; white-space: nowrap;
-}
-.btn:hover { background: var(--bg-hover); color: var(--text-primary); }
-.btn:disabled { opacity: 0.3; cursor: not-allowed; pointer-events: none; }
-.btn-primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
-.btn-primary:hover { background: #2563EB; }
 .btn-secondary { border-color: rgba(139,92,246,0.3); color: var(--purple); }
 .btn-secondary:hover { background: var(--purple-soft); }
-.btn-optimize { background: linear-gradient(135deg, #8B5CF6, #EC4899); border: none; color: #fff; font-weight: 600; }
-.btn-optimize:hover { filter: brightness(1.1); }
-.btn-sm { padding: 6px 12px; font-size: 0.75rem; }
-
-.stock-chips {
-  display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px;
-  max-height: 280px; overflow-y: auto;
-}
-.stock-chip {
-  background: var(--bg-elevated); border: 1px solid var(--border);
-  border-radius: var(--radius-sm); padding: 5px 10px;
-  font-size: 0.75rem; cursor: pointer; transition: all 0.2s; user-select: none;
-  min-width: 130px;
-}
-.stock-chip:hover { border-color: var(--accent); }
-.stock-chip.selected { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
-.stock-chip .chip-name { font-weight: 600; }
-.stock-chip .chip-code { font-size: 0.65rem; color: var(--text-tertiary); margin-left: 3px; }
-.stock-chip .chip-vol { display: block; font-size: 0.62rem; color: var(--text-tertiary); margin-top: 1px; }
-
-.actions-row { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; align-items: center; }
-.status-msg { font-size: 0.8rem; color: var(--text-tertiary); margin-left: 4px; }
-
-.form-grid {
-  display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
-  gap: 12px;
-}
-
-.result-grid {
-  display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px;
-}
-.result-card {
-  background: var(--bg-elevated); border-radius: var(--radius-md); padding: 14px;
-}
-.result-label { font-size: 0.7rem; color: var(--text-tertiary); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px; }
-.result-value { font-size: 1.2rem; font-weight: 700; font-variant-numeric: tabular-nums; }
-.result-sub { font-size: 0.7rem; color: var(--text-tertiary); margin-top: 2px; }
-
-table {
-  width: 100%; border-collapse: collapse; font-size: 0.8rem;
-  font-variant-numeric: tabular-nums;
-}
-thead th {
-  text-align: left; color: var(--text-tertiary); font-weight: 500;
-  font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.5px;
-  padding: 9px 14px; background: var(--bg-elevated);
-  border-bottom: 1px solid var(--border); position: sticky; top: 0;
-}
-tbody td {
-  padding: 9px 14px; border-bottom: 1px solid var(--border);
-  color: var(--text-primary);
-}
-tbody tr:hover { background: rgba(148,163,184,0.03); }
-tbody tr:last-child td { border-bottom: none; }
-.text-right { text-align: right; }
-.text-center { text-align: center; }
-.text-profit { color: var(--profit); }
-.text-loss { color: var(--loss); }
-.pnl-chip { display: inline-block; padding: 2px 7px; border-radius: 5px; font-size: 0.75rem; font-weight: 600; }
-.pnl-chip.up { background: var(--profit-soft); color: var(--profit); }
-.pnl-chip.down { background: var(--loss-soft); color: var(--loss); }
 .pnl-chip.neutral { background: var(--bg-hover); color: var(--text-secondary); }
-
-.rank-badge {
-  display: inline-flex; align-items: center; justify-content: center;
-  width: 20px; height: 20px; border-radius: 50%; font-size: 0.65rem; font-weight: 700;
-  background: var(--bg-hover); color: var(--text-tertiary); flex-shrink: 0;
-}
 .rank-badge.top { background: var(--purple-soft); color: var(--purple); }
-
-.progress-bar {
-  height: 6px; background: var(--bg-hover); border-radius: 3px;
-  margin-top: 10px; overflow: hidden; display: none;
-}
-.progress-bar.active { display: block; }
-.progress-bar .bar {
-  height: 100%; background: linear-gradient(90deg, var(--accent), #8B5CF6);
-  border-radius: 3px; transition: width 0.5s ease;
-  min-width: 2%;
-}
-.progress-bar .bar.indeterminate { animation: progress 1.5s ease-in-out infinite; }
-@keyframes progress { 0%{width:15%;margin-left:0} 50%{width:40%;margin-left:30%} 100%{width:15%;margin-left:85%} }
-
-.toast {
-  position: fixed; bottom: 28px; left: 50%; transform: translateX(-50%);
-  padding: 12px 28px; border-radius: var(--radius-sm); font-size: 0.82rem;
-  font-weight: 500; color: #fff; z-index: 9999;
-  animation: toastIn 0.35s cubic-bezier(0.16,1,0.3,1);
-}
-.toast-success { background: rgba(34,197,94,0.92); }
-.toast-error { background: rgba(239,68,68,0.92); }
-@keyframes toastIn {
-  from { opacity: 0; transform: translateX(-50%) translateY(12px); }
-  to { opacity: 1; transform: translateX(-50%) translateY(0); }
-}
-
-
-.scroll-area { max-height: 400px; overflow-y: auto; }
-
-.divider {
-  height: 1px; background: var(--border); margin: 6px 0 20px;
-}
-
+.divider { height: 1px; background: var(--border); margin: 6px 0 20px; }
 #result-section, #optimize-result { display: none; }
-
-
-@media (max-width: 768px) {
-  .result-grid { grid-template-columns: repeat(2, 1fr); }
-  .form-grid { grid-template-columns: 1fr 1fr; }
-}
 </style>
 </head>
 <body>
 
 <div class="header">
-  <div class="header-inner">
+  <div class="header-top">
     <div class="brand">
       <div class="brand-logo">B</div>
       <div>
@@ -256,11 +31,14 @@ tbody tr:last-child td { border-bottom: none; }
         <span class="brand-sub">Historical Replay Engine</span>
       </div>
     </div>
-    <div class="nav-links">
-      <a href="/" class="nav-link">Live Trading</a>
-      <a href="/backtest" class="nav-link active">Backtest</a>
-    </div>
   </div>
+  <nav class="nav-bar">
+    <a href="/" class="nav-item">라이브</a>
+    <a href="/quant" class="nav-item">퀀트</a>
+    <span class="nav-sep"></span>
+    <a href="/scalping/backtest" class="nav-item active">스캘핑 백테스트</a>
+    <a href="/quant/backtest" class="nav-item">퀀트 백테스트</a>
+  </nav>
 </div>
 
 <div class="container">
@@ -371,6 +149,7 @@ tbody tr:last-child td { border-bottom: none; }
         <div id="strategy-chips" class="stock-chips" style="margin-top:6px">
           <span style="color:var(--text-tertiary);font-size:0.8rem">로딩 중...</span>
         </div>
+        <div id="strategy-params" style="margin-top:12px"></div>
       </div>
       <div class="actions-row">
         <button class="btn btn-primary" onclick="doRun()" id="btn-run">백테스트 실행</button>
@@ -425,6 +204,7 @@ tbody tr:last-child td { border-bottom: none; }
                 <th class="text-right">승률</th>
                 <th class="text-right">거래수</th>
                 <th class="text-right">수수료</th>
+                <th class="text-center">복사</th>
               </tr>
             </thead>
             <tbody id="opt-table"></tbody>
@@ -436,9 +216,8 @@ tbody tr:last-child td { border-bottom: none; }
 
 </div>
 
+<script src="/static/js/common.js"></script>
 <script>
-const fmt = n => Number(n).toLocaleString('ko-KR');
-const pnlSign = v => { const n = Number(v); return n > 0 ? '+' + fmt(n) : n < 0 ? fmt(n) : '0'; };
 const pctStr = v => (v >= 0 ? '+' : '') + v + '%';
 
 let _stocks = [];
@@ -449,14 +228,6 @@ let _dbSelected = new Set();
 
 let _strategies = [];
 let _stratEnabled = new Set();
-
-function toast(msg, type) {
-  const el = document.createElement('div');
-  el.className = 'toast toast-' + type;
-  el.textContent = msg;
-  document.body.appendChild(el);
-  setTimeout(() => el.remove(), 3000);
-}
 
 function setFetchStatus(msg) { document.getElementById('fetch-status').textContent = msg; }
 function setBtStatus(msg) { document.getElementById('bt-status').textContent = msg; }
@@ -651,6 +422,7 @@ async function doRun() {
     max_qty: parseInt(document.getElementById('max-qty').value) || 100,
     max_positions: parseInt(document.getElementById('max-positions').value) || 3,
     date: dt,
+    strategy_params: collectStratParams(),
   };
 
   setBtButtons(true);
@@ -812,8 +584,10 @@ function fmtStratParams(strategies) {
   }).join('');
 }
 
+let _optResults = [];
 function showOptimizeResult(d) {
   const results = d.results || [];
+  _optResults = results.slice(0, 30);
   document.getElementById('optimize-result').style.display = 'block';
   document.getElementById('opt-badge').textContent = `${d.tested}개 조합 / 상위 ${Math.min(results.length, 30)}`;
 
@@ -833,8 +607,9 @@ function showOptimizeResult(d) {
       <td class="text-right">${r.win_rate}%</td>
       <td class="text-right">${r.total_trades}</td>
       <td class="text-right">${fmt(r.total_fees)}</td>
+      <td class="text-center"><button class="btn" style="padding:2px 8px;font-size:0.65rem" onclick="event.stopPropagation();copyOptJson(${i})">JSON</button></td>
     </tr>`;
-  }).join('') : '<tr><td colspan="10" style="text-align:center;padding:20px;color:var(--text-tertiary)">수익 나는 조합 없음</td></tr>';
+  }).join('') : '<tr><td colspan="11" style="text-align:center;padding:20px;color:var(--text-tertiary)">수익 나는 조합 없음</td></tr>';
 
   document.getElementById('optimize-result').scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
@@ -844,6 +619,33 @@ function applyParams(sl, tp, mp) {
   document.getElementById('take-profit').value = tp;
   document.getElementById('max-positions').value = mp;
   toast(`손절 ${(sl*100).toFixed(1)}% / 익절 ${(tp*100).toFixed(1)}% / 포지션 ${mp} 적용`, 'success');
+}
+function copyOptJson(idx) {
+  const r = _optResults[idx]; if (!r) return;
+  const obj = { risk: { stop_loss_ratio: r.stop_loss, take_profit_ratio: r.take_profit, max_open_positions: r.max_positions } };
+  const stratName = r.strategy || '';
+  obj.strategies = {};
+  if (r.strategies && Object.keys(r.strategies).length) {
+    for (const [name, params] of Object.entries(r.strategies)) {
+      obj.strategies[name] = { enabled: true, params };
+    }
+  } else if (stratName) {
+    obj.strategies[stratName] = { enabled: true };
+  }
+  const text = JSON.stringify(obj, null, 2);
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(() => toast('JSON 복사됨 — 스캘핑/퀀트 페이지에서 붙여넣기', 'success')).catch(() => _fallbackCopy(text));
+  } else {
+    _fallbackCopy(text);
+  }
+}
+function _fallbackCopy(text) {
+  const ta = document.createElement('textarea');
+  ta.value = text; ta.style.cssText = 'position:fixed;left:-9999px';
+  document.body.appendChild(ta); ta.select();
+  try { document.execCommand('copy'); toast('JSON 복사됨 — 스캘핑/퀀트 페이지에서 붙여넣기', 'success'); }
+  catch { toast('복사 실패 — 수동으로 복사하세요', 'error'); console.log(text); }
+  document.body.removeChild(ta);
 }
 
 async function loadDbInfo() {
@@ -877,6 +679,13 @@ async function loadStrategies() {
   }
 }
 
+const _paramLabels = {
+  short_window: '단기 이평', long_window: '장기 이평', window: '이평 기간',
+  num_std: '표준편차 배수', oversold: '과매도 기준', overbought: '과매수 기준',
+  bid_ask_ratio_threshold: '호가비율 임계값', deviation_threshold: 'VWAP 이탈',
+  cooldown_seconds: '쿨다운(초)', stop_loss_ratio: '전략 손절', take_profit_ratio: '전략 익절',
+};
+
 function toggleStrategy(name) {
   if (_stratEnabled.has(name)) _stratEnabled.delete(name);
   else _stratEnabled.add(name);
@@ -887,12 +696,39 @@ function renderStrategyChips() {
   const el = document.getElementById('strategy-chips');
   el.innerHTML = _strategies.map(s => {
     const sel = _stratEnabled.has(s.name) ? ' selected' : '';
-    const paramStr = Object.entries(s.params).map(([k,v]) => `${k}=${v}`).join(', ');
     return `<span class="stock-chip${sel}" onclick="toggleStrategy('${s.name}')" style="min-width:auto">
       <span class="chip-name">${s.display_name}</span>
-      <span class="chip-vol">${paramStr}</span>
     </span>`;
   }).join('');
+  renderStratParams();
+}
+
+function renderStratParams() {
+  const el = document.getElementById('strategy-params');
+  const enabled = _strategies.filter(s => _stratEnabled.has(s.name));
+  if (!enabled.length) { el.innerHTML = ''; return; }
+  el.innerHTML = enabled.map(s => {
+    const fields = Object.entries(s.params).map(([k, v]) => {
+      const label = _paramLabels[k] || k;
+      const step = typeof v === 'number' && !Number.isInteger(v) ? '0.001' : '1';
+      return `<div class="form-group"><label class="form-label">${label}</label><input type="number" class="form-input" id="sp-${s.name}-${k}" value="${v}" step="${step}"></div>`;
+    }).join('');
+    return `<div style="margin-bottom:12px"><div style="font-size:0.78rem;font-weight:600;color:var(--text-secondary);margin-bottom:6px">${s.display_name}</div><div class="form-grid">${fields}</div></div>`;
+  }).join('');
+}
+
+function collectStratParams() {
+  const params = {};
+  for (const s of _strategies) {
+    if (!_stratEnabled.has(s.name)) continue;
+    const p = {};
+    for (const k of Object.keys(s.params)) {
+      const input = document.getElementById(`sp-${s.name}-${k}`);
+      if (input) p[k] = parseFloat(input.value);
+    }
+    if (Object.keys(p).length) params[s.name] = p;
+  }
+  return params;
 }
 
 function getEnabledStrategies() { return [..._stratEnabled]; }

@@ -6,6 +6,7 @@ import structlog
 import uvicorn
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
 
 from scalpy.dashboard.routes import init_routes, router
 from scalpy.dashboard.sse import SSEManager
@@ -30,23 +31,41 @@ def create_app(
 ) -> FastAPI:
     app = FastAPI(title="Scalpy Dashboard", docs_url=None, redoc_url=None)
 
+    app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
+
     sse = SSEManager(bus)
     app.state.sse = sse
     init_routes(state, sse, engine, bus=bus, screener=screener, stream=stream, registry=registry, trade_repo=trade_repo)
     app.include_router(router)
 
     from scalpy.backtest.routes import router as bt_router
+    from scalpy.backtest.quant_routes import router as qbt_router
     app.include_router(bt_router)
+    app.include_router(qbt_router)
 
     @app.get("/")
     async def index() -> HTMLResponse:
         return HTMLResponse(_INDEX_HTML.read_text())
 
-    _bt_html = _STATIC_DIR / "backtest.html"
+    _scalp_bt_html = _STATIC_DIR / "backtest.html"
+    _quant_html = _STATIC_DIR / "quant.html"
+    _quant_bt_html = _STATIC_DIR / "quant_backtest.html"
 
     @app.get("/backtest")
-    async def backtest_page() -> HTMLResponse:
-        return HTMLResponse(_bt_html.read_text())
+    async def backtest_redirect() -> HTMLResponse:
+        return HTMLResponse(_scalp_bt_html.read_text())
+
+    @app.get("/scalping/backtest")
+    async def scalping_backtest_page() -> HTMLResponse:
+        return HTMLResponse(_scalp_bt_html.read_text())
+
+    @app.get("/quant")
+    async def quant_page() -> HTMLResponse:
+        return HTMLResponse(_quant_html.read_text())
+
+    @app.get("/quant/backtest")
+    async def quant_backtest_page() -> HTMLResponse:
+        return HTMLResponse(_quant_bt_html.read_text())
 
     return app
 

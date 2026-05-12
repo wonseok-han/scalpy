@@ -24,6 +24,8 @@ class BaseStrategy(ABC):
         self._last_signal_tick: dict[str, int] = {}
         self._backtest_mode: bool = False
         self.cooldown_ticks: int = 1
+        self.stop_loss_ratio: float | None = None
+        self.take_profit_ratio: float | None = None
 
     def reset(self) -> None:
         self._last_signal_at.clear()
@@ -61,6 +63,9 @@ class BaseStrategy(ABC):
         bids: list[tuple[Decimal, int]],
     ) -> Signal | None:
         """Called on orderbook update. Return a Signal or None."""
+
+    def prefill(self, symbol: str, candles: list[dict]) -> None:
+        """Override in subclasses to pre-fill buffers with historical OHLCV data."""
 
     def configure(self, params: dict[str, Any]) -> None:
         for key, value in params.items():

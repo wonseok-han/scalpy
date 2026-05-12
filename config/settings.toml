@@ -1,7 +1,7 @@
 [default]
 # 모의투자 모드 (true: 모의투자, false: 실거래)
 # 실거래 전환은 이 파일에서만 가능 (CLI 인자 불가)
-mock = true
+mock = false
 # PostgreSQL 연결 문자열 (docker-compose 기본값)
 database_url = "postgresql://scalpy:scalpy@localhost:5432/scalpy"
 
@@ -23,6 +23,8 @@ interval = 0.5
 volatility = 0.01
 
 [default.trading]
+# 트레이딩 모드: "scalping" | "quant" | "both"
+mode = "both"
 # 서버 시작 시 자동으로 트레이딩 시작 (false: 대시보드에서 수동 시작)
 auto_start = false
 # 자동매매 대상 종목코드 목록 (최대 20종목, WebSocket 구독 제한)
@@ -33,10 +35,16 @@ max_position_size = 100
 max_position_ratio = 0.3
 # 동시 보유 최대 포지션 수 (초과 시 신규 매수 차단)
 max_open_positions = 3
+# 장 마감 시 자동 청산 (true: 스캘핑 기본, false: 퀀트 오버나이트 보유)
+market_close_liquidate = false
 # 손절 비율 (0.003 = 0.3%, 평균단가 대비 하락 시 자동 청산)
-stop_loss_ratio = 0.003
+stop_loss_ratio = 0.02
 # 익절 비율 (0.015 = 1.5%, 평균단가 대비 상승 시 자동 청산)
-take_profit_ratio = 0.01
+take_profit_ratio = 0.03
+# 횡보 청산: N시간 보유 후 수익률이 ±threshold 이내이면 자동 청산 (0 = 비활성화)
+stagnation_hours = 3
+# 횡보 판정 임계값 (0.005 = ±0.5% 이내이면 횡보로 판정)
+stagnation_threshold = 0.005
 
 [default.screening]
 # 자동 종목 스크리닝 활성화 (false: settings.toml의 symbols 사용)
@@ -54,6 +62,26 @@ min_volume = 100000
 # 재스크리닝 주기 (분)
 interval_minutes = 30
 
+[default.quant]
+# 퀀트 스크리닝 설정
+max_stocks = 10
+# 모멘텀 계산 기간 (일, 단기 퀀트 기준 10일)
+momentum_days = 10
+# 최소 평균 거래량 (10일 평균)
+min_avg_volume = 500000
+# 최소 모멘텀 (0.0 = 양수 모멘텀만, -0.1 = 10% 하락까지 허용)
+min_momentum = 0
+# 거래대금 상위 N종목만 OHLCV 분석 (전체 시장 1차 필터 후)
+universe_size = 100
+# 당일 등락률 하한 (-2.0 = -2%, 이하 급락 종목 universe에서 제외)
+min_change_rate = -2.0
+# OHLCV 데이터 자동 갱신 간격 (분, 0 = 비활성화)
+ohlcv_refresh_minutes = 30
+# 퀀트 재스크리닝 주기 (분, 종목 교체 + WS 구독 갱신, 0 = 비활성화)
+rescan_interval_minutes = 10
+# 퀀트 스크리닝 대상 종목 유니버스 (빈 배열이면 기존 스크리닝 결과 활용)
+universe = []
+
 [default.dashboard]
 # 웹 대시보드 활성화
 enabled = true
@@ -67,10 +95,12 @@ bot_token = ""
 chat_id = ""
 
 [default.strategies]
-# 초기 활성 전략 (UI에서 런타임 토글 가능)
+# 스캘핑 활성 전략 (UI에서 런타임 토글 가능)
 # 사용 가능: ma_cross, bollinger, rsi, orderbook, vwap
-# orderbook: 호가창 노이즈 과다, vwap: 서버 시작 시점 누적 문제, rsi: 추세장 역행 위험
-enabled = ["ma_cross"]
+scalping_enabled = []
+# 퀀트 활성 전략
+# 사용 가능: momentum, mean_reversion, factor
+quant_enabled = ["factor"]
 
 [default.strategies.ma_cross]
 # 단기 이동평균 기간 (최근 N개 체결가의 평균)
@@ -79,6 +109,9 @@ short_window = 3
 long_window = 15
 # 같은 종목 같은 방향 신호 재발생 쿨다운 (초)
 cooldown_seconds = 120
+# 전략별 손절/익절 (미설정 시 [trading] 글로벌 값 사용)
+# stop_loss_ratio = 0.003
+# take_profit_ratio = 0.01
 
 [default.strategies.bollinger]
 # 볼린저밴드 이동평균 기간
@@ -107,3 +140,40 @@ cooldown_seconds = 60
 # 현재가가 VWAP보다 0.5% 이상 낮으면 매수, 높으면 매도
 deviation_threshold = 0.005
 cooldown_seconds = 120
+
+[default.strategies.momentum]
+# 가격/거래량 관측 윈도우 (최근 N틱)
+lookback = 20
+# 거래량 급증 배수 (평균 대비 N배 이상이면 급증 판정)
+volume_multiplier = 2
+# 고점 돌파 비율 (0.005 = 0.5%, 최근 고점 대비 이 비율 이상 상승 시 진입)
+breakout_pct = 0.01
+cooldown_seconds = 1800
+# 단기 퀀트용 손절/익절 (1시간~1일 보유 기준)
+stop_loss_ratio = 0.03
+take_profit_ratio = 0.05
+
+[default.strategies.mean_reversion]
+# 볼린저밴드 관측 윈도우
+window = 20
+# 표준편차 배수
+num_std = 2
+cooldown_seconds = 1800
+# 밴드 복귀 대기 시간 감안 넓은 손절/익절
+stop_loss_ratio = 0.025
+take_profit_ratio = 0.04
+
+[default.strategies.factor]
+# 팩터 관측 윈도우
+lookback = 20
+# 팩터 점수 임계값 (0~1, 높을수록 보수적)
+buy_threshold = 0.55
+sell_threshold = 0.55
+# 팩터 가중치 (합계 1.0)
+weight_momentum = 0.4
+weight_volume = 0.2
+weight_orderbook = 0.3
+cooldown_seconds = 600
+# 복합 팩터 — 가장 넓은 손절/익절
+stop_loss_ratio = 0.025
+take_profit_ratio = 0.04

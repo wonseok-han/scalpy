@@ -6,120 +6,17 @@
 <title>Scalpy Dashboard</title>
 <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
 <link href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css" rel="stylesheet">
+<link rel="stylesheet" href="/static/css/common.css">
 <style>
-:root {
-  --bg-base: #0B0E13;
-  --bg-surface: #13171E;
-  --bg-elevated: #1A1F2B;
-  --bg-hover: #222834;
-  --border: rgba(148,163,184,0.08);
-  --border-hover: rgba(148,163,184,0.15);
-  --text-primary: #E2E8F0;
-  --text-secondary: #94A3B8;
-  --text-tertiary: #64748B;
-  --accent: #3B82F6;
-  --accent-soft: rgba(59,130,246,0.12);
-  --profit: #22C55E;
-  --profit-soft: rgba(34,197,94,0.12);
-  --loss: #EF4444;
-  --loss-soft: rgba(239,68,68,0.12);
-  --warning: #F59E0B;
-  --radius-sm: 8px;
-  --radius-md: 12px;
-  --radius-lg: 16px;
-  --radius-xl: 20px;
-  --shadow-card: 0 1px 3px rgba(0,0,0,0.3), 0 1px 2px rgba(0,0,0,0.2);
-  --shadow-elevated: 0 4px 16px rgba(0,0,0,0.4);
-  --font: "Pretendard Variable", Pretendard, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-}
-
-* { margin: 0; padding: 0; box-sizing: border-box; }
-
-body {
-  font-family: var(--font);
-  background: var(--bg-base);
-  color: var(--text-primary);
-  line-height: 1.5;
-  -webkit-font-smoothing: antialiased;
-  overflow-x: hidden;
-}
-
-::-webkit-scrollbar { width: 6px; }
-::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: var(--text-tertiary); border-radius: 3px; }
-::-webkit-scrollbar-thumb:hover { background: var(--text-secondary); }
-
-.container {
-  max-width: 1440px;
-  margin: 0 auto;
-  padding: 0 24px 40px;
-}
-
-/* ── Header ── */
-.header {
-  position: sticky;
-  top: 0;
-  z-index: 100;
-  background: rgba(11,14,19,0.82);
-  backdrop-filter: blur(20px) saturate(1.4);
-  -webkit-backdrop-filter: blur(20px) saturate(1.4);
-  border-bottom: 1px solid var(--border);
-  padding: 14px 24px;
-  margin-bottom: 24px;
-}
-.header-inner {
-  max-width: 1440px;
-  margin: 0 auto;
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 16px;
-}
-.brand {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-}
-.brand-logo {
-  width: 36px;
-  height: 36px;
-  background: linear-gradient(135deg, #3B82F6, #8B5CF6);
-  border-radius: var(--radius-sm);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-weight: 800;
-  font-size: 0.85rem;
-  color: #fff;
-  letter-spacing: -0.5px;
-  flex-shrink: 0;
-}
-.brand-text h1 {
-  font-size: 1.1rem;
-  font-weight: 700;
-  color: var(--text-primary);
-  letter-spacing: -0.3px;
-}
+/* ── Index: Engine Status ── */
 .brand-meta {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-top: 1px;
+  display: flex; align-items: center; gap: 10px; margin-top: 1px;
 }
 .engine-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  font-size: 0.75rem;
-  font-weight: 500;
-  color: var(--text-secondary);
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: 0.75rem; font-weight: 500; color: var(--text-secondary);
 }
-.pulse-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  flex-shrink: 0;
-}
+.pulse-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
 .pulse-dot.on {
   background: var(--profit);
   box-shadow: 0 0 0 0 rgba(34,197,94,0.5);
@@ -132,48 +29,11 @@ body {
   100% { box-shadow: 0 0 0 0 rgba(34,197,94,0); }
 }
 .conn-badge {
-  font-size: 0.65rem;
-  font-weight: 600;
-  padding: 2px 7px;
-  border-radius: 4px;
-  letter-spacing: 0.5px;
-  text-transform: uppercase;
+  font-size: 0.65rem; font-weight: 600; padding: 2px 7px;
+  border-radius: 4px; letter-spacing: 0.5px; text-transform: uppercase;
 }
 .conn-live { background: var(--profit-soft); color: var(--profit); }
 .conn-off { background: var(--loss-soft); color: var(--loss); }
-
-.actions { display: flex; gap: 8px; flex-wrap: wrap; }
-.btn {
-  padding: 8px 16px;
-  border: 1px solid var(--border-hover);
-  border-radius: var(--radius-sm);
-  background: var(--bg-elevated);
-  color: var(--text-secondary);
-  cursor: pointer;
-  font-family: var(--font);
-  font-size: 0.8rem;
-  font-weight: 500;
-  transition: all 0.2s ease;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  white-space: nowrap;
-}
-.btn:hover { background: var(--bg-hover); color: var(--text-primary); transform: translateY(-1px); }
-.btn:active { transform: translateY(0); }
-.btn-primary {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: #fff;
-  font-weight: 600;
-}
-.btn-primary:hover { background: #2563EB; border-color: #2563EB; }
-.btn-danger { border-color: rgba(239,68,68,0.3); color: var(--loss); }
-.btn-danger:hover { background: var(--loss-soft); border-color: var(--loss); }
-.btn:disabled { opacity: 0.3; cursor: not-allowed; pointer-events: none; }
-.btn.loading { opacity: 0.6; pointer-events: none; }
-.btn.loading::after { content:''; display:inline-block; width:12px; height:12px; margin-left:6px; border:2px solid transparent; border-top-color:currentColor; border-radius:50%; animation:spin .6s linear infinite; vertical-align:middle; }
-@keyframes spin { to { transform:rotate(360deg) } }
 
 /* ── Loading Overlay ── */
 .loading-overlay { position:fixed; inset:0; background:var(--bg-base); z-index:9999; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:20px; transition:opacity .4s; }
@@ -464,52 +324,12 @@ tbody tr:last-child td { border-bottom: none; }
   white-space: nowrap;
 }
 
-/* ── Toast ── */
-.toast {
-  position: fixed;
-  bottom: 28px;
-  left: 50%;
-  transform: translateX(-50%);
-  padding: 12px 28px;
-  border-radius: var(--radius-sm);
-  font-family: var(--font);
-  font-size: 0.82rem;
-  font-weight: 500;
-  color: #fff;
-  z-index: 9999;
-  backdrop-filter: blur(12px);
-  animation: toastIn 0.35s cubic-bezier(0.16,1,0.3,1);
-  box-shadow: var(--shadow-elevated);
-}
-.toast-success { background: rgba(34,197,94,0.92); }
-.toast-error { background: rgba(239,68,68,0.92); }
-@keyframes toastIn {
-  from { opacity: 0; transform: translateX(-50%) translateY(12px) scale(0.95); }
-  to { opacity: 1; transform: translateX(-50%) translateY(0) scale(1); }
-}
-
-/* ── Entrance Animations ── */
-@keyframes slideUp {
-  from { opacity: 0; transform: translateY(16px); }
-  to { opacity: 1; transform: translateY(0); }
-}
-@keyframes fadeRow {
-  from { opacity: 0; transform: translateY(-6px); }
-  to { opacity: 1; transform: translateY(0); }
-}
-.anim-1 { animation: slideUp 0.5s ease both; animation-delay: 0.05s; }
-.anim-2 { animation: slideUp 0.5s ease both; animation-delay: 0.1s; }
-.anim-3 { animation: slideUp 0.5s ease both; animation-delay: 0.15s; }
-.anim-4 { animation: slideUp 0.5s ease both; animation-delay: 0.2s; }
-.new-row { animation: fadeRow 0.3s ease both; }
-
-/* ── Responsive ── */
+/* ── Responsive (page-specific) ── */
 @media (max-width: 1200px) {
   .metrics-row { grid-template-columns: repeat(3, 1fr); }
   .status-row { grid-template-columns: repeat(2, 1fr); }
 }
 @media (max-width: 768px) {
-  .header-inner { flex-direction: column; align-items: flex-start; }
   .metrics-row { grid-template-columns: repeat(2, 1fr); }
   .status-row { grid-template-columns: 1fr; }
   .grid-2 { grid-template-columns: 1fr; }
@@ -527,7 +347,7 @@ tbody tr:last-child td { border-bottom: none; }
 
 <!-- Header -->
 <div class="header">
-  <div class="header-inner">
+  <div class="header-top">
     <div class="brand">
       <div class="brand-logo">S</div>
       <div class="brand-text">
@@ -544,9 +364,15 @@ tbody tr:last-child td { border-bottom: none; }
       <button id="btn-rescan" class="btn" onclick="action('rescan')">스크리닝</button>
       <button id="btn-liquidate" class="btn btn-danger" onclick="if(confirm('전체 청산하시겠습니까?'))action('liquidate')">전체청산</button>
       <button class="btn" onclick="cancelAllOrders()" style="color:var(--warning)">미체결 초기화</button>
-      <a href="/backtest" class="btn" style="text-decoration:none">백테스트</a>
     </div>
   </div>
+  <nav class="nav-bar">
+    <a href="/" class="nav-item active">라이브</a>
+    <a href="/quant" class="nav-item">퀀트</a>
+    <span class="nav-sep"></span>
+    <a href="/scalping/backtest" class="nav-item">스캘핑 백테스트</a>
+    <a href="/quant/backtest" class="nav-item">퀀트 백테스트</a>
+  </nav>
 </div>
 
 <div class="container">
@@ -717,6 +543,45 @@ tbody tr:last-child td { border-bottom: none; }
     </div>
   </div>
 
+  <!-- Settings Panel -->
+  <div class="grid-full anim-4">
+    <div class="card">
+      <div class="card-header" style="cursor:pointer" onclick="document.getElementById('settings-body').style.display=document.getElementById('settings-body').style.display==='none'?'block':'none'">
+        <span class="card-title">설정</span>
+        <span class="card-badge">클릭하여 펼치기</span>
+      </div>
+      <div class="card-body-padded" id="settings-body" style="display:none">
+        <div class="section-title" style="margin-top:0">리스크 관리</div>
+        <div class="form-grid">
+          <div class="form-group"><label class="form-label">손절 비율</label><input type="number" class="form-input" id="set-stop-loss" step="0.001" min="0"></div>
+          <div class="form-group"><label class="form-label">익절 비율</label><input type="number" class="form-input" id="set-take-profit" step="0.001" min="0"></div>
+          <div class="form-group"><label class="form-label">종목당 최대 수량</label><input type="number" class="form-input" id="set-max-qty" min="1"></div>
+          <div class="form-group"><label class="form-label">최대 포지션 수</label><input type="number" class="form-input" id="set-max-positions" min="1"></div>
+          <div class="form-group"><label class="form-label">투입 비율</label><input type="number" class="form-input" id="set-max-ratio" step="0.05" min="0" max="1"></div>
+        </div>
+        <div class="section-title">스크리닝</div>
+        <div class="form-grid">
+          <div class="form-group"><label class="form-label">최대 종목 수</label><input type="number" class="form-input" id="set-scr-max" min="1"></div>
+          <div class="form-group"><label class="form-label">최소 등락률</label><input type="number" class="form-input" id="set-scr-min-rate" step="0.5" min="0"></div>
+          <div class="form-group"><label class="form-label">최대 등락률</label><input type="number" class="form-input" id="set-scr-max-rate" step="0.5" min="0"></div>
+          <div class="form-group"><label class="form-label">최소 거래량</label><input type="number" class="form-input" id="set-scr-min-vol" step="10000" min="0"></div>
+          <div class="form-group"><label class="form-label">재스크리닝 주기(분)</label><input type="number" class="form-input" id="set-scr-interval" min="1"></div>
+        </div>
+        <div id="strat-params-section"></div>
+        <div class="actions-row">
+          <button class="btn btn-primary" onclick="saveSettings()">설정 저장</button>
+          <button class="btn btn-primary" style="background:var(--loss);border-color:var(--loss)" onclick="persistSettings()">하드 저장 (toml)</button>
+          <button class="btn" onclick="loadSettings()">초기화</button>
+        </div>
+        <div class="section-title">JSON 임포트</div>
+        <div style="display:flex;gap:8px;align-items:flex-start">
+          <textarea id="json-import" placeholder='백테스트 최적화 결과 JSON을 붙여넣으세요' style="flex:1;height:60px;background:var(--bg-elevated);border:1px solid var(--border);border-radius:var(--radius-sm);padding:8px 12px;color:var(--text-primary);font-family:var(--font);font-size:0.78rem;resize:vertical;outline:none"></textarea>
+          <button class="btn btn-primary" onclick="applyJson()" style="white-space:nowrap">적용</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- Screening -->
   <div class="grid-full anim-4">
     <div class="card">
@@ -732,8 +597,10 @@ tbody tr:last-child td { border-bottom: none; }
     </div>
   </div>
 
+
 </div>
 
+<script src="/static/js/common.js"></script>
 <script>
 // ── Market Timer ──
 const _MARKET_SESSIONS = [
@@ -818,30 +685,29 @@ function _fmtMs(ms) {
 _updateMarketTimer();
 setInterval(_updateMarketTimer, 1000);
 
-// ── Utils ──
-function fmt(n){return Number(n).toLocaleString('ko-KR')}
-function pnlSign(v){const n=Number(v);return n>0?'+'+fmt(n):n<0?fmt(n):'0'}
+// ── Utils (fmt, pnlSign, toast from common.js) ──
 function pnlType(v){const n=Number(v);return n>0?'up':n<0?'down':'neutral'}
 let _names={};
 let _strats={};
 let _stratEnabled={};
 const _systemLabels={'synced':'기존 보유','manual':'수동 매매','unknown':'알 수 없음'};
+const _SCALPING_KEYS=new Set(['ma_cross','bollinger','rsi','orderbook','vwap']);
 function stratLabel(key){if(!key)return'-';return _strats[key]||_systemLabels[key]||key}
 
 async function toggleStrategy(name){
   try{
-    const r=await fetch('/api/strategies/'+name+'/toggle',{method:'POST'});
+    const r=await fetch('/api/strategies/'+name+'/toggle',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode:'scalping'})});
     const d=await r.json();
     if(d.success){
       _stratEnabled[name]=d.enabled;
       renderStrategies();
-      showToast((stratLabel(name))+(d.enabled?' 활성화':' 비활성화'));
+      toast((stratLabel(name))+(d.enabled?' 활성화':' 비활성화'),'success');
     }
   }catch(e){console.error('toggle failed',e)}
 }
 
 function renderStrategies(){
-  const entries=Object.entries(_strats);
+  const entries=Object.entries(_strats).filter(([k])=>_SCALPING_KEYS.has(k));
   const enabledCount=entries.filter(([k])=>_stratEnabled[k]!==false).length;
   document.getElementById('strategy-count').textContent=enabledCount+'/'+entries.length;
   document.getElementById('strat-badge').textContent=enabledCount+'/'+entries.length;
@@ -884,6 +750,7 @@ async function loadInitial(){
   loadBalance();
   loadTrades();
   loadPeriodPnl();
+  loadSettings();
 }
 
 async function loadBalance(){
@@ -1096,13 +963,6 @@ async function liquidateOne(symbol){
 
 const _actionLabels={start:'스캘핑 시작',stop:'스캘핑 정지',rescan:'스크리닝 완료',liquidate:'전체 청산 완료'};
 const _errorLabels={'already stopped':'이미 정지 상태입니다','stop in progress':'정지 중입니다','engine not available':'엔진이 준비되지 않았습니다'};
-function toast(msg,type){
-  const el=document.createElement('div');
-  el.className='toast toast-'+type;
-  el.textContent=msg;
-  document.body.appendChild(el);
-  setTimeout(()=>el.remove(),3000);
-}
 let _posCount=0;
 async function cancelAllOrders(){
   try{
@@ -1137,7 +997,9 @@ async function action(name,silent){
   let orig;
   if(btn){orig=btn.textContent;btn.classList.add('loading');btn.textContent='처리 중';}
   try{
-    const r=await fetch('/api/actions/'+name,{method:'POST'});
+    const opts={method:'POST'};
+    if(name==='start'){opts.headers={'Content-Type':'application/json'};opts.body=JSON.stringify({mode:'scalping'});}
+    const r=await fetch('/api/actions/'+name,opts);
     const text=await r.text();
     let d;
     try{d=JSON.parse(text)}catch{toast('응답 파싱 실패 ('+r.status+')','error');return}
@@ -1157,6 +1019,123 @@ es.onerror=()=>{
   badge.textContent='OFFLINE';badge.className='conn-badge conn-off';
   document.getElementById('engine-status').innerHTML='<span class="pulse-dot off"></span> 연결 끊김';
 };
+
+const _spLabels={
+  short_window:'단기 이평',long_window:'장기 이평',window:'이평 기간',
+  num_std:'표준편차 배수',oversold:'과매도 기준',overbought:'과매수 기준',
+  bid_ask_ratio_threshold:'호가비율 임계값',deviation_threshold:'VWAP 이탈',
+  cooldown_seconds:'쿨다운(초)',stop_loss_ratio:'전략 손절',take_profit_ratio:'전략 익절',
+};
+const _SCALP_NAMES=new Set(['ma_cross','bollinger','rsi','orderbook','vwap']);
+let _stratSettings={};
+async function loadSettings(){
+  try{
+    const d=await fetch('/api/settings').then(r=>r.json());
+    const r=d.risk||{};
+    document.getElementById('set-stop-loss').value=r.stop_loss_ratio??'';
+    document.getElementById('set-take-profit').value=r.take_profit_ratio??'';
+    document.getElementById('set-max-qty').value=r.max_position_size??'';
+    document.getElementById('set-max-positions').value=r.max_open_positions??'';
+    document.getElementById('set-max-ratio').value=r.max_position_ratio??'';
+    const sc=d.screening||{};
+    document.getElementById('set-scr-max').value=sc.max_stocks??'';
+    document.getElementById('set-scr-min-rate').value=sc.min_change_rate??'';
+    document.getElementById('set-scr-max-rate').value=sc.max_change_rate??'';
+    document.getElementById('set-scr-min-vol').value=sc.min_volume??'';
+    document.getElementById('set-scr-interval').value=sc.interval_minutes??'';
+    _stratSettings=d.strategies||{};
+    renderStratSettings();
+  }catch(e){console.error('settings load failed',e)}
+}
+function renderStratSettings(){
+  const el=document.getElementById('strat-params-section');
+  const entries=Object.entries(_stratSettings).filter(([n])=>_SCALP_NAMES.has(n));
+  if(!entries.length){el.innerHTML='';return;}
+  el.innerHTML=entries.map(([name,s])=>{
+    const label=s.display_name||name;
+    const fields=Object.entries(s.params||{}).map(([k,v])=>{
+      const lb=_spLabels[k]||k;
+      const step=typeof v==='number'&&!Number.isInteger(v)?'0.001':'1';
+      return `<div class="form-group"><label class="form-label">${lb}</label><input type="number" class="form-input" id="sp-${name}-${k}" value="${v}" step="${step}"></div>`;
+    }).join('');
+    return `<div class="section-title">${label} 파라미터</div><div class="form-grid">${fields}</div>`;
+  }).join('');
+}
+function _num(el){const v=parseFloat(el.value);return isNaN(v)?undefined:v;}
+function _int(el){const v=parseInt(el.value);return isNaN(v)?undefined:v;}
+function _clean(obj){return Object.fromEntries(Object.entries(obj).filter(([,v])=>v!==undefined));}
+function collectStratSettings(){
+  const out={};
+  for(const [name,s] of Object.entries(_stratSettings)){
+    if(!_SCALP_NAMES.has(name)) continue;
+    const p={};
+    for(const k of Object.keys(s.params||{})){
+      const input=document.getElementById(`sp-${name}-${k}`);
+      if(!input) continue;
+      const v=Number(input.value);
+      if(!isNaN(v)) p[k]=v;
+    }
+    if(Object.keys(p).length) out[name]={params:p};
+  }
+  return out;
+}
+async function saveSettings(){
+  const payload={
+    risk:_clean({
+      stop_loss_ratio:_num(document.getElementById('set-stop-loss')),
+      take_profit_ratio:_num(document.getElementById('set-take-profit')),
+      max_position_size:_int(document.getElementById('set-max-qty')),
+      max_open_positions:_int(document.getElementById('set-max-positions')),
+      max_position_ratio:_num(document.getElementById('set-max-ratio')),
+    }),
+    screening:_clean({
+      max_stocks:_int(document.getElementById('set-scr-max')),
+      min_change_rate:_num(document.getElementById('set-scr-min-rate')),
+      max_change_rate:_num(document.getElementById('set-scr-max-rate')),
+      min_volume:_int(document.getElementById('set-scr-min-vol')),
+      interval_minutes:_int(document.getElementById('set-scr-interval')),
+    }),
+    strategies:collectStratSettings(),
+  };
+  try{
+    const r=await fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+    const d=await r.json();
+    if(d.success) toast('설정 저장 완료','success');
+    else toast('설정 저장 실패','error');
+  }catch(e){toast('오류: '+e.message,'error')}
+}
+async function persistSettings(){
+  if(!confirm('현재 설정을 settings.toml에 덮어쓰시겠습니까?\n(서버 재시작 후에도 유지됩니다)')) return;
+  await saveSettings();
+  try{
+    const r=await fetch('/api/settings/persist',{method:'POST',headers:{'Content-Type':'application/json'}});
+    const d=await r.json();
+    if(d.success) toast('settings.toml 저장 완료','success');
+    else toast('저장 실패: '+(d.error||''),'error');
+  }catch(e){toast('오류: '+e.message,'error')}
+}
+const _scalpStrats=['ma_cross','bollinger','rsi','orderbook','vwap'];
+const _quantStrats2=['momentum','mean_reversion','factor'];
+async function applyJson(){
+  const ta=document.getElementById('json-import');
+  let obj;
+  try{obj=JSON.parse(ta.value)}catch{toast('유효하지 않은 JSON','error');return}
+  if(obj.strategies){
+    const incoming=Object.keys(obj.strategies);
+    for(const n of _scalpStrats){
+      if(!incoming.includes(n))obj.strategies[n]={enabled:false};
+    }
+    for(const n of _quantStrats2){
+      if(!incoming.includes(n))obj.strategies[n]={enabled:false};
+    }
+  }
+  try{
+    const r=await fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(obj)});
+    const d=await r.json();
+    if(d.success){toast('JSON 적용 완료 ('+d.applied.join(', ')+')','success');ta.value='';loadSettings();}
+    else toast('적용 실패','error');
+  }catch(e){toast('오류: '+e.message,'error')}
+}
 
 loadInitial();
 setInterval(loadTrades, 60000);
