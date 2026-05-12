@@ -7,6 +7,44 @@ from scalpy.data.ohlcv import OhlcvRepository
 
 logger = structlog.get_logger()
 
+_EXCLUDE_DEPT = {"SPAC(소속부없음)", "관리종목(소속부없음)", "투자주의환기종목(소속부없음)"}
+
+
+def scan_market_universe(
+    min_volume: int = 100_000,
+    min_change_rate: float = -2.0,
+    min_amount: int = 0,
+    top_n: int = 100,
+) -> list[dict[str, Any]]:
+    """FinanceDataReader로 전체 KRX 종목 중 기본 조건 통과 종목 반환."""
+    import FinanceDataReader as fdr
+
+    df = fdr.StockListing("KRX")
+    df = df[df["Market"].isin(["KOSPI", "KOSDAQ"])]
+    if "Dept" in df.columns:
+        df = df[~df["Dept"].isin(_EXCLUDE_DEPT)]
+    df = df[df["Volume"] >= min_volume]
+    df = df[df["ChagesRatio"] >= min_change_rate]
+    if min_amount > 0:
+        df = df[df["Amount"] >= min_amount]
+    # 우선주 제외 (코드 끝자리 0이 아닌 것)
+    df = df[df["Code"].str[-1] == "0"]
+
+    df = df.sort_values("Amount", ascending=False).head(top_n)
+
+    result = []
+    for _, row in df.iterrows():
+        result.append({
+            "symbol": row["Code"],
+            "name": row["Name"],
+            "close": int(row["Close"]) if row["Close"] else 0,
+            "change_rate": float(row["ChagesRatio"]) if row["ChagesRatio"] else 0.0,
+            "volume": int(row["Volume"]) if row["Volume"] else 0,
+            "amount": int(row["Amount"]) if row["Amount"] else 0,
+        })
+    logger.info("market_universe.scanned", filtered=len(df), top_n=top_n, passed=len(result))
+    return result
+
 
 class QuantScreener:
     """OHLCV 히스토리 기반 퀀트 종목 스크리너.

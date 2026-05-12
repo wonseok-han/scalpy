@@ -201,6 +201,25 @@ async def list_strategies() -> dict:
     }
 
 
+_STRAT_SKIP = frozenset({"name", "display_name", "description", "enabled", "cooldown_ticks"})
+_SCALPING_STRATEGIES = {"ma_cross", "bollinger", "rsi", "orderbook", "vwap"}
+
+
+def _get_scalp_strat_defaults() -> dict[str, dict]:
+    from scalpy.main import build_registry
+
+    reg = build_registry()
+    defaults = {}
+    for s in reg.all():
+        if s.name not in _SCALPING_STRATEGIES:
+            continue
+        defaults[s.name] = {
+            k: v for k, v in vars(s).items()
+            if not k.startswith("_") and k not in _STRAT_SKIP
+        }
+    return defaults
+
+
 async def _run_optimize(
     symbols: list[str],
     kwargs_base: dict,
@@ -211,6 +230,7 @@ async def _run_optimize(
     global _running, _progress
     results = []
     current = 0
+    strat_defaults = _get_scalp_strat_defaults()
     try:
         for strat_name, strat_param in strat_combos:
             for sl, tp, mp in risk_combos:
@@ -227,13 +247,13 @@ async def _run_optimize(
                 }
                 result = await run_backtest(symbols, **kwargs)
                 if "error" not in result:
-                    strat_summary = {strat_name: {k: round(v, 4) if isinstance(v, float) else v for k, v in strat_param.items()}} if strat_param else {strat_name: {}}
+                    full_params = {**strat_defaults.get(strat_name, {}), **strat_param}
                     results.append({
                         "strategy": strat_name,
                         "stop_loss": sl,
                         "take_profit": tp,
                         "max_positions": mp,
-                        "strategies": strat_summary,
+                        "strategies": {strat_name: full_params},
                         "pnl": result["pnl"],
                         "pnl_pct": result["pnl_pct"],
                         "win_rate": result["win_rate"],
@@ -244,7 +264,7 @@ async def _run_optimize(
 
         seen = set()
         deduped = []
-        results.sort(key=lambda x: x["pnl"], reverse=True)
+        results.sort(key=lambda x: (x["win_rate"], x["pnl_pct"]), reverse=True)
         for r in results:
             key = (r["strategy"], r["pnl"], r["win_rate"], r["total_trades"])
             if key not in seen:
@@ -269,7 +289,10 @@ async def optimize(req: OptimizeRequest) -> dict:
     mp_values = req.max_positions_list or [2, 3, 5]
 
     strategies = req.strategies or ["ma_cross", "bollinger", "rsi", "vwap"]
-    strat_grids = req.strategy_grids or {k: v for k, v in _STRATEGY_GRIDS_DEFAULT.items() if k in strategies}
+    if req.strategy_grids:
+        strat_grids = req.strategy_grids
+    else:
+        strat_grids = {k: v for k, v in _STRATEGY_GRIDS_DEFAULT.items() if k in strategies}
     strat_combos = _build_strategy_combos(strategies, strat_grids)
 
     risk_combos = [(sl, tp, mp) for sl, tp, mp in itertools.product(sl_values, tp_values, mp_values) if tp > sl]

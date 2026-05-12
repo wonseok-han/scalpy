@@ -367,6 +367,7 @@
         <div class="form-group"><label class="form-label">최소 모멘텀</label><input type="number" class="form-input" id="set-q-min-momentum" step="0.01"></div>
         <div class="form-group"><label class="form-label">OHLCV 갱신주기(분)</label><input type="number" class="form-input" id="set-q-ohlcv-interval" min="0"></div>
       </div>
+      <div id="strat-params-section"></div>
       <div class="actions-row">
         <button class="btn btn-primary" onclick="saveSettings()">설정 저장</button>
         <button class="btn btn-primary" style="background:var(--loss);border-color:var(--loss)" onclick="persistSettings()">하드 저장 (toml)</button>
@@ -560,37 +561,45 @@ function copyScanSymbols(){
   navigator.clipboard.writeText(_scanSymbols.join(','));
   toast(_scanSymbols.length+'개 종목 복사됨','success');
 }
+function _renderScanItems(items){
+  const tb=document.getElementById('scan-table');
+  _scanSymbols=items.map(s=>s.symbol);
+  document.getElementById('candidate-count').textContent=items.length+'개';
+  if(!items.length){tb.innerHTML='<tr><td colspan="10" class="empty-row">조건에 맞는 종목 없음</td></tr>';return;}
+  const maxScore=Math.max(...items.map(s=>s.score));
+  const minScore=Math.min(...items.map(s=>s.score));
+  const scoreRange=maxScore-minScore||1;
+  tb.innerHTML=items.map((s,i)=>{
+    const pct=((s.score-minScore)/scoreRange)*100;
+    return `<tr>
+      <td style="color:var(--text-tertiary)">${i+1}</td>
+      <td><strong>${s.name||s.symbol}</strong> <span style="color:var(--text-tertiary);font-size:0.7rem">${s.symbol}</span></td>
+      <td class="text-right">${fmt(s.close)}</td>
+      <td class="text-right ${s.momentum>=0?'text-profit':'text-loss'}">${(s.momentum*100).toFixed(1)}%</td>
+      <td class="text-right ${s.sharpe>=0?'text-profit':'text-loss'}">${s.sharpe.toFixed(2)}</td>
+      <td class="text-right">${s.avg_turnover>=1e8?(s.avg_turnover/1e8).toFixed(1)+'억':(s.avg_turnover/1e4).toFixed(0)+'만'}</td>
+      <td class="text-right">${s.volume_surge.toFixed(1)}x</td>
+      <td class="text-right">${(s.atr_pct*100).toFixed(2)}%</td>
+      <td class="text-right">${s.rsi!=null?s.rsi.toFixed(0):'-'}</td>
+      <td class="text-right">${s.score.toFixed(3)}<span class="score-bar"><span class="score-fill" style="width:${pct}%"></span></span></td>
+    </tr>`;
+  }).join('');
+}
 async function runScan(){
   const btn=document.getElementById('btn-scan'),tb=document.getElementById('scan-table');
   btn.classList.add('loading');btn.textContent='스캔 중...';
   tb.innerHTML='<tr><td colspan="10" class="empty-row">스캔 중...</td></tr>';
   try{
-    const d=await fetch('/api/quant/scan').then(r=>r.json());
+    const d=await fetch('/api/quant/scan?refresh=true').then(r=>r.json());
     const items=d.data||[];
-    _scanSymbols=items.map(s=>s.symbol);
-    document.getElementById('candidate-count').textContent=items.length+'개';
-    if(!items.length){tb.innerHTML='<tr><td colspan="10" class="empty-row">조건에 맞는 종목 없음</td></tr>';return;}
-    const maxScore=Math.max(...items.map(s=>s.score));
-    const minScore=Math.min(...items.map(s=>s.score));
-    const scoreRange=maxScore-minScore||1;
-    tb.innerHTML=items.map((s,i)=>{
-      const pct=((s.score-minScore)/scoreRange)*100;
-      return `<tr>
-        <td style="color:var(--text-tertiary)">${i+1}</td>
-        <td><strong>${s.name||s.symbol}</strong> <span style="color:var(--text-tertiary);font-size:0.7rem">${s.symbol}</span></td>
-        <td class="text-right">${fmt(s.close)}</td>
-        <td class="text-right ${s.momentum>=0?'text-profit':'text-loss'}">${(s.momentum*100).toFixed(1)}%</td>
-        <td class="text-right ${s.sharpe>=0?'text-profit':'text-loss'}">${s.sharpe.toFixed(2)}</td>
-        <td class="text-right">${s.avg_turnover>=1e8?(s.avg_turnover/1e8).toFixed(1)+'억':(s.avg_turnover/1e4).toFixed(0)+'만'}</td>
-        <td class="text-right">${s.volume_surge.toFixed(1)}x</td>
-        <td class="text-right">${(s.atr_pct*100).toFixed(2)}%</td>
-        <td class="text-right">${s.rsi!=null?s.rsi.toFixed(0):'-'}</td>
-        <td class="text-right">${s.score.toFixed(3)}<span class="score-bar"><span class="score-fill" style="width:${pct}%"></span></span></td>
-      </tr>`;
-    }).join('');
-    toast(items.length+'개 종목 스캔 완료','success');
+    _renderScanItems(items);
+    try{sessionStorage.setItem('quant_scan',JSON.stringify(items))}catch{}
+    if(items.length) toast(items.length+'개 종목 스캔 완료','success');
   }catch(e){tb.innerHTML='<tr><td colspan="10" class="empty-row">오류: '+e.message+'</td></tr>';toast('스캔 실패','error');}
   finally{btn.classList.remove('loading');btn.textContent='스캔 실행';}
+}
+function _restoreScan(){
+  try{const d=sessionStorage.getItem('quant_scan');if(d){_renderScanItems(JSON.parse(d));}}catch{}
 }
 
 // ── Performance ──
@@ -617,9 +626,11 @@ async function fetchOhlcv(){
 async function startQuant(){
   const btn=document.getElementById('btn-start');btn.classList.add('loading');btn.textContent='시작 중...';
   try{
-    const d=await fetch('/api/actions/start',{method:'POST'}).then(r=>r.json());
-    if(d.success){toast('퀀트 트레이딩 시작 ('+d.symbols.length+'개 종목)','success');}
-    else toast(d.error||'시작 실패','error');
+    const d=await fetch('/api/actions/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode:'quant'})}).then(r=>r.json());
+    if(d.success){
+      toast('퀀트 트레이딩 시작 ('+d.symbols.length+'개 종목)','success');
+      if(d.scan&&d.scan.length){_renderScanItems(d.scan);try{sessionStorage.setItem('quant_scan',JSON.stringify(d.scan))}catch{}}
+    } else toast(d.error||'시작 실패','error');
   }catch(e){toast('오류: '+e.message,'error');}
   finally{btn.classList.remove('loading');btn.textContent='퀀트 시작';}
 }
@@ -675,7 +686,7 @@ async function loadInitial(){
     const [status,positions]=await Promise.all([fetch('/api/status').then(r=>r.json()),fetch('/api/positions').then(r=>r.json())]);
     updateStatus(status);updatePositions(positions);
   }catch(e){console.error('initial load failed',e);}
-  loadBalance();loadTrades();
+  loadBalance();loadTrades();_restoreScan();
 }
 
 const badge=document.getElementById('conn-badge');
@@ -684,6 +695,14 @@ es.addEventListener('state',e=>{try{applySseState(JSON.parse(e.data))}catch(err)
 es.onopen=()=>{badge.textContent='LIVE';badge.className='conn-badge conn-live';};
 es.onerror=()=>{badge.textContent='OFFLINE';badge.className='conn-badge conn-off';document.getElementById('engine-status').innerHTML='<span class="pulse-dot off"></span> 연결 끊김';};
 
+const _spLabels={
+  lookback:'관측 윈도우',volume_multiplier:'거래량 배수',breakout_pct:'돌파 비율',
+  window:'이평 기간',num_std:'표준편차 배수',buy_threshold:'매수 임계값',
+  sell_threshold:'매도 임계값',weight_momentum:'모멘텀 가중치',weight_volume:'거래량 가중치',
+  weight_orderbook:'호가 가중치',cooldown_seconds:'쿨다운(초)',
+  stop_loss_ratio:'전략 손절',take_profit_ratio:'전략 익절',
+};
+let _stratSettings={};
 async function loadSettings(){
   try{
     const d=await fetch('/api/settings').then(r=>r.json());
@@ -699,24 +718,59 @@ async function loadSettings(){
     document.getElementById('set-q-min-vol').value=q.min_avg_volume??'';
     document.getElementById('set-q-min-momentum').value=q.min_momentum??'';
     document.getElementById('set-q-ohlcv-interval').value=q.ohlcv_refresh_minutes??'';
+    _stratSettings=d.strategies||{};
+    renderStratSettings();
   }catch(e){console.error('settings load failed',e)}
+}
+function renderStratSettings(){
+  const el=document.getElementById('strat-params-section');
+  const entries=Object.entries(_stratSettings).filter(([n])=>_QUANT_NAMES.has(n));
+  if(!entries.length){el.innerHTML='';return;}
+  el.innerHTML=entries.map(([name,s])=>{
+    const label=s.display_name||name;
+    const fields=Object.entries(s.params||{}).map(([k,v])=>{
+      const lb=_spLabels[k]||k;
+      const step=typeof v==='number'&&!Number.isInteger(v)?'0.001':'1';
+      return `<div class="form-group"><label class="form-label">${lb}</label><input type="number" class="form-input" id="sp-${name}-${k}" value="${v}" step="${step}"></div>`;
+    }).join('');
+    return `<div class="section-title">${label} 파라미터</div><div class="form-grid">${fields}</div>`;
+  }).join('');
+}
+function _num(el){const v=parseFloat(el.value);return isNaN(v)?undefined:v;}
+function _int(el){const v=parseInt(el.value);return isNaN(v)?undefined:v;}
+function _clean(obj){return Object.fromEntries(Object.entries(obj).filter(([,v])=>v!==undefined));}
+function collectStratSettings(){
+  const out={};
+  for(const [name,s] of Object.entries(_stratSettings)){
+    if(!_QUANT_NAMES.has(name)) continue;
+    const p={};
+    for(const k of Object.keys(s.params||{})){
+      const input=document.getElementById(`sp-${name}-${k}`);
+      if(!input) continue;
+      const v=Number(input.value);
+      if(!isNaN(v)) p[k]=v;
+    }
+    if(Object.keys(p).length) out[name]={params:p};
+  }
+  return out;
 }
 async function saveSettings(){
   const payload={
-    risk:{
-      stop_loss_ratio:parseFloat(document.getElementById('set-stop-loss').value),
-      take_profit_ratio:parseFloat(document.getElementById('set-take-profit').value),
-      max_position_size:parseInt(document.getElementById('set-max-qty').value),
-      max_open_positions:parseInt(document.getElementById('set-max-positions').value),
-      max_position_ratio:parseFloat(document.getElementById('set-max-ratio').value),
-    },
-    quant:{
-      max_stocks:parseInt(document.getElementById('set-q-max').value),
-      momentum_days:parseInt(document.getElementById('set-q-momentum-days').value),
-      min_avg_volume:parseInt(document.getElementById('set-q-min-vol').value),
-      min_momentum:parseFloat(document.getElementById('set-q-min-momentum').value),
-      ohlcv_refresh_minutes:parseInt(document.getElementById('set-q-ohlcv-interval').value),
-    },
+    risk:_clean({
+      stop_loss_ratio:_num(document.getElementById('set-stop-loss')),
+      take_profit_ratio:_num(document.getElementById('set-take-profit')),
+      max_position_size:_int(document.getElementById('set-max-qty')),
+      max_open_positions:_int(document.getElementById('set-max-positions')),
+      max_position_ratio:_num(document.getElementById('set-max-ratio')),
+    }),
+    quant:_clean({
+      max_stocks:_int(document.getElementById('set-q-max')),
+      momentum_days:_int(document.getElementById('set-q-momentum-days')),
+      min_avg_volume:_int(document.getElementById('set-q-min-vol')),
+      min_momentum:_num(document.getElementById('set-q-min-momentum')),
+      ohlcv_refresh_minutes:_int(document.getElementById('set-q-ohlcv-interval')),
+    }),
+    strategies:collectStratSettings(),
   };
   try{
     const r=await fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
@@ -735,10 +789,21 @@ async function persistSettings(){
     else toast('저장 실패: '+(d.error||''),'error');
   }catch(e){toast('오류: '+e.message,'error')}
 }
+const _QUANT_STRAT_NAMES=['momentum','mean_reversion','factor'];
+const _SCALP_STRAT_NAMES=['ma_cross','bollinger','rsi','orderbook','vwap'];
 async function applyJson(){
   const ta=document.getElementById('json-import');
   let obj;
   try{obj=JSON.parse(ta.value)}catch{toast('유효하지 않은 JSON','error');return}
+  if(obj.strategies){
+    const incoming=Object.keys(obj.strategies);
+    for(const n of _QUANT_STRAT_NAMES){
+      if(!incoming.includes(n))obj.strategies[n]={enabled:false};
+    }
+    for(const n of _SCALP_STRAT_NAMES){
+      if(!incoming.includes(n))obj.strategies[n]={enabled:false};
+    }
+  }
   try{
     const r=await fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(obj)});
     const d=await r.json();

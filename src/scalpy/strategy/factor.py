@@ -90,7 +90,7 @@ class FactorStrategy(BaseStrategy):
             + (1 - o) * self.weight_orderbook
         )
 
-        if buy_score >= self.buy_threshold and self._check_cooldown(symbol, "BUY"):
+        if buy_score >= self.buy_threshold and m >= 0.5 and self._check_cooldown(symbol, "BUY"):
             confidence = min(0.9, buy_score)
             return Signal(symbol, Side.BUY, self.name, price, 0, confidence, datetime.now())
 

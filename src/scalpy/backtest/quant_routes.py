@@ -7,6 +7,7 @@ import structlog
 from fastapi import APIRouter
 from pydantic import BaseModel
 
+from scalpy.backtest.fetcher import get_stock_names
 from scalpy.backtest.quant_runner import run_quant_backtest
 from scalpy.config import settings
 
@@ -94,10 +95,14 @@ async def available_symbols() -> dict:
             .group_by(OhlcvRow.symbol)
         ).all()
 
+    symbols = [r[0] for r in rows]
+    names = await asyncio.to_thread(get_stock_names, symbols) if symbols else {}
+
     return {
         "symbols": [
             {
                 "symbol": sym,
+                "name": names.get(sym, sym),
                 "count": cnt,
                 "min_dt": str(min_dt),
                 "max_dt": str(max_dt),
@@ -181,19 +186,41 @@ async def run(req: RunRequest) -> dict:
 
 _QUANT_GRIDS_DEFAULT: dict[str, dict[str, list]] = {
     "momentum": {
-        "lookback": [20, 30, 50],
+        "lookback": [15, 20, 30],
         "volume_multiplier": [1.5, 2.0, 3.0],
-        "breakout_pct": [0.003, 0.005, 0.01],
+        "breakout_pct": [0.005, 0.01, 0.02],
     },
     "mean_reversion": {
         "window": [15, 20, 30],
         "num_std": [1.5, 2.0, 2.5],
     },
     "factor": {
-        "lookback": [20, 30, 50],
+        "lookback": [20, 30],
         "buy_threshold": [0.55, 0.65, 0.75],
+        "sell_threshold": [0.55, 0.65],
+        "weight_momentum": [0.3, 0.4, 0.5],
+        "weight_volume": [0.2, 0.3],
+        "weight_orderbook": [0.2, 0.3],
     },
 }
+
+
+_STRAT_SKIP = frozenset({"name", "display_name", "description", "enabled", "cooldown_ticks"})
+
+
+def _get_strat_defaults() -> dict[str, dict]:
+    from scalpy.main import build_registry
+
+    reg = build_registry()
+    defaults = {}
+    for s in reg.all():
+        if s.name not in _QUANT_STRATEGIES:
+            continue
+        defaults[s.name] = {
+            k: v for k, v in vars(s).items()
+            if not k.startswith("_") and k not in _STRAT_SKIP
+        }
+    return defaults
 
 
 async def _run_optimize(
@@ -207,6 +234,7 @@ async def _run_optimize(
     global _running, _progress
     results = []
     current = 0
+    strat_defaults = _get_strat_defaults()
     try:
         for strat_name, strat_param in strat_combos:
             for sl, tp, mp in risk_combos:
@@ -224,12 +252,13 @@ async def _run_optimize(
                 }
                 result = await run_quant_backtest(symbols, **kwargs)
                 if "error" not in result:
+                    full_params = {**strat_defaults.get(strat_name, {}), **strat_param}
                     results.append({
                         "strategy": strat_name,
                         "stop_loss": sl,
                         "take_profit": tp,
                         "max_positions": mp,
-                        "strategies": {strat_name: strat_param} if strat_param else {},
+                        "strategies": {strat_name: full_params},
                         "pnl": result["pnl"],
                         "pnl_pct": result["pnl_pct"],
                         "win_rate": result["win_rate"],
@@ -238,7 +267,7 @@ async def _run_optimize(
                     })
                 await asyncio.sleep(0)
 
-        results.sort(key=lambda x: x["pnl"], reverse=True)
+        results.sort(key=lambda x: (x["win_rate"], x["pnl_pct"]), reverse=True)
         seen: set[tuple] = set()
         deduped = []
         for r in results:
@@ -270,9 +299,12 @@ async def optimize(req: OptimizeRequest) -> dict:
     mp_values = req.max_positions_list or [3, 5, 7]
 
     strategies = req.strategies or _QUANT_STRATEGIES
-    strat_grids = req.strategy_grids or {
-        k: v for k, v in _QUANT_GRIDS_DEFAULT.items() if k in strategies
-    }
+    if req.strategy_grids:
+        strat_grids = req.strategy_grids
+    else:
+        strat_grids = {
+            k: v for k, v in _QUANT_GRIDS_DEFAULT.items() if k in strategies
+        }
 
     strat_combos: list[tuple[str, dict]] = []
     for name in strategies:

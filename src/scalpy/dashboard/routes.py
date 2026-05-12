@@ -4,6 +4,7 @@ from typing import Any
 import structlog
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
 
 from scalpy.config import settings
 from scalpy.dashboard.sse import SSEManager
@@ -41,6 +42,7 @@ _stream_ref: Any = None
 _registry_ref: StrategyRegistry | None = None
 _trade_repo_ref: Any = None
 _trading_started: bool = False
+_quant_rescan_task: asyncio.Task[None] | None = None
 
 _SSE_EVENTS = [
     "tick.received", "order.filled", "signal.generated",
@@ -346,18 +348,51 @@ _QUANT_STRATEGIES = {"momentum", "mean_reversion", "factor"}
 def _apply_mode(mode: str) -> None:
     if not _registry_ref:
         return
-    if mode == "scalping":
-        for s in _registry_ref.all():
+    scalping_on = set(settings.get("strategies.scalping_enabled", ["ma_cross"]))
+    quant_on = set(settings.get("strategies.quant_enabled", ["momentum"]))
+    for s in _registry_ref.all():
+        if mode == "scalping":
             if s.name in _QUANT_STRATEGIES:
                 s.enabled = False
-    elif mode == "quant":
-        for s in _registry_ref.all():
+            elif s.name in _SCALPING_STRATEGIES:
+                s.enabled = s.name in scalping_on
+        elif mode == "quant":
             if s.name in _SCALPING_STRATEGIES:
                 s.enabled = False
+            elif s.name in _QUANT_STRATEGIES:
+                s.enabled = s.name in quant_on
+        else:
+            if s.name in _SCALPING_STRATEGIES:
+                s.enabled = s.name in scalping_on
+            elif s.name in _QUANT_STRATEGIES:
+                s.enabled = s.name in quant_on
+    logger.info("dashboard.mode_applied", mode=mode, enabled=[s.name for s in _registry_ref.enabled()])
+
+
+_last_quant_scan: list[dict] = []
+
+
+async def _build_universe(quant_cfg: dict) -> tuple[list[str], dict[str, str]]:
+    """전체 시장에서 1차 필터링된 universe와 종목명 맵 반환."""
+    from scalpy.screening.quant_screener import scan_market_universe
+
+    min_cr = quant_cfg.get("min_change_rate", -2.0)
+    min_vol = quant_cfg.get("min_avg_volume", 500_000)
+    top_n = quant_cfg.get("universe_size", 100)
+    try:
+        stocks = await asyncio.to_thread(scan_market_universe, min_vol, min_cr, 0, top_n)
+        symbols = [s["symbol"] for s in stocks]
+        names = {s["symbol"]: s["name"] for s in stocks}
+        logger.info("quant.market_universe", candidates=len(symbols))
+        return symbols, names
+    except Exception as e:
+        logger.warning("quant.market_universe_failed", error=str(e))
+        return [], {}
 
 
 async def _quant_start() -> list[str]:
-    """Quant flow: top volume -> OHLCV fetch -> screen -> prefill."""
+    """Quant flow: market scan -> OHLCV fetch -> score -> prefill + start rescan loop."""
+    global _last_quant_scan, _quant_rescan_task
     from scalpy.data.ohlcv import OhlcvRepository
     from scalpy.screening.quant_screener import QuantScreener
 
@@ -366,20 +401,23 @@ async def _quant_start() -> list[str]:
         return []
 
     quant_cfg = settings.get("quant", {})
-    broker = _engine_ref._broker if _engine_ref else None
 
-    universe = quant_cfg.get("universe", [])
-    if not universe and broker:
-        top = await broker.get_top_volume_stocks(30)
-        top = [s for s in top if not _is_etf(s.get("symbol", ""), s.get("name", ""))]
-        universe = [s["symbol"] for s in top]
-        if _state:
-            for s in top:
-                if s.get("name"):
-                    _state.symbol_names[s["symbol"]] = s["name"]
-
+    universe = list(quant_cfg.get("universe", []))
+    names: dict[str, str] = {}
+    if not universe:
+        universe, names = await _build_universe(quant_cfg)
+    if not universe:
+        broker = _engine_ref._broker if _engine_ref else None
+        if broker:
+            top = await broker.get_top_volume_stocks(30)
+            top = [s for s in top if not _is_etf(s.get("symbol", ""), s.get("name", ""))]
+            universe = [s["symbol"] for s in top]
+            names = {s["symbol"]: s.get("name", "") for s in top}
     if not universe:
         return []
+
+    if _state and names:
+        _state.symbol_names.update({k: v for k, v in names.items() if v})
 
     ohlcv_repo = OhlcvRepository(db_url)
     ohlcv_repo.create_tables()
@@ -395,17 +433,95 @@ async def _quant_start() -> list[str]:
     held = [p.symbol for p in _engine_ref.positions.all()] if _engine_ref else []
     selected = screener.scan(universe, held_symbols=held)
 
+    all_names = {**names, **(_state.symbol_names if _state else {})}
+    results = screener.get_last_scan()
+    for r in results:
+        r["name"] = all_names.get(r["symbol"], r["symbol"])
+    _last_quant_scan = results
+
     if selected and _engine_ref:
         for sym in selected:
             candles = ohlcv_repo.get_candles(sym, interval="1d", limit=60)
             if candles:
                 _engine_ref.prefill_strategies(sym, candles)
 
+    rescan_min = quant_cfg.get("rescan_interval_minutes", 30)
+    if rescan_min > 0 and (not _quant_rescan_task or _quant_rescan_task.done()):
+        _quant_rescan_task = asyncio.create_task(
+            _quant_rescan_loop(ohlcv_repo, rescan_min)
+        )
+
     return selected
 
 
+async def _quant_rescan_loop(
+    ohlcv_repo: Any,
+    interval_minutes: int,
+) -> None:
+    """주기적으로 퀀트 스크리닝을 재실행하여 종목 교체."""
+    global _last_quant_scan
+    from scalpy.screening.quant_screener import QuantScreener
+
+    while _trading_started:
+        await asyncio.sleep(interval_minutes * 60)
+        if not _trading_started:
+            break
+        try:
+            quant_cfg = settings.get("quant", {})
+            universe = list(quant_cfg.get("universe", []))
+            names: dict[str, str] = {}
+            if not universe:
+                universe, names = await _build_universe(quant_cfg)
+            if not universe and _engine_ref:
+                universe = list(_engine_ref._active_symbols)
+            if not universe:
+                continue
+
+            if _state and names:
+                _state.symbol_names.update({k: v for k, v in names.items() if v})
+
+            ohlcv_repo.bulk_fetch(universe, interval="1d")
+
+            screener = QuantScreener(
+                ohlcv_repo=ohlcv_repo,
+                max_stocks=quant_cfg.get("max_stocks", 10),
+                momentum_days=quant_cfg.get("momentum_days", 20),
+                min_avg_volume=quant_cfg.get("min_avg_volume", 500_000),
+                min_momentum=quant_cfg.get("min_momentum", 0.0),
+            )
+            held = [p.symbol for p in _engine_ref.positions.all()] if _engine_ref else []
+            new_symbols = screener.scan(universe, held_symbols=held)
+
+            all_names = {**names, **(_state.symbol_names if _state else {})}
+            results = screener.get_last_scan()
+            for r in results:
+                r["name"] = all_names.get(r["symbol"], r["symbol"])
+            _last_quant_scan = results
+
+            if new_symbols and _engine_ref:
+                if _stream_ref:
+                    await _stream_ref.update_subscriptions(new_symbols)
+                await _engine_ref.update_symbols(new_symbols)
+                for sym in new_symbols:
+                    candles = ohlcv_repo.get_candles(sym, interval="1d", limit=60)
+                    if candles:
+                        _engine_ref.prefill_strategies(sym, candles)
+                logger.info("quant_rescan.updated", symbols=new_symbols)
+                if _bus:
+                    await _bus.emit("screening.completed", {
+                        "symbols": new_symbols,
+                        "names": {s: all_names.get(s, s) for s in new_symbols},
+                    })
+        except Exception as e:
+            logger.warning("quant_rescan.failed", error=str(e))
+
+
+class StartRequest(BaseModel):
+    mode: str | None = None
+
+
 @router.post("/actions/start")
-async def start_engine() -> dict[str, Any]:
+async def start_engine(req: StartRequest | None = None) -> dict[str, Any]:
     global _trading_started
     if _engine_ref is None:
         return {"success": False, "error": "engine not available"}
@@ -421,7 +537,7 @@ async def start_engine() -> dict[str, Any]:
         _engine_ref.start_background_loops()
 
         trading_cfg = settings.get("trading", {})
-        mode = trading_cfg.get("mode", "scalping")
+        mode = (req and req.mode) or trading_cfg.get("mode", "scalping")
         _apply_mode(mode)
 
         symbols: list[str] = []
@@ -453,7 +569,10 @@ async def start_engine() -> dict[str, Any]:
 
         _trading_started = True
         logger.info("dashboard.engine_started", mode=mode, symbols=symbols)
-        return {"success": True, "mode": mode, "symbols": symbols}
+        resp: dict[str, Any] = {"success": True, "mode": mode, "symbols": symbols}
+        if _last_quant_scan:
+            resp["scan"] = _last_quant_scan
+        return resp
     except Exception as e:
         logger.error("dashboard.start_failed", error=str(e))
         return {"success": False, "error": str(e)}
@@ -461,7 +580,7 @@ async def start_engine() -> dict[str, Any]:
 
 @router.post("/actions/stop")
 async def stop_engine() -> dict[str, Any]:
-    global _trading_started
+    global _trading_started, _quant_rescan_task
     if _engine_ref is None:
         return {"success": False}
     if not _trading_started:
@@ -471,6 +590,9 @@ async def stop_engine() -> dict[str, Any]:
     _engine_ref._running = False
     _engine_ref.stop_background_loops()
     _trading_started = False
+    if _quant_rescan_task and not _quant_rescan_task.done():
+        _quant_rescan_task.cancel()
+    _quant_rescan_task = None
 
     if _stream_ref:
         await _stream_ref.stop()
@@ -513,6 +635,10 @@ async def toggle_strategy(name: str, body: dict[str, Any] | None = None) -> dict
     result = _registry_ref.toggle(name)
     if result is None:
         return {"success": False, "error": "strategy not found"}
+    scalping_on = [s.name for s in _registry_ref.all() if s.enabled and s.name in _SCALPING_STRATEGIES]
+    quant_on = [s.name for s in _registry_ref.all() if s.enabled and s.name in _QUANT_STRATEGIES]
+    settings.set("strategies.scalping_enabled", scalping_on)
+    settings.set("strategies.quant_enabled", quant_on)
     if _sse:
         _sse.broadcast("state", _build_sse_state())
     return {"success": True, "name": name, "enabled": result}
@@ -556,7 +682,11 @@ async def get_ohlcv(symbol: str, interval: str = "1d", limit: int = 60) -> dict[
 
 
 @router.get("/quant/scan")
-async def quant_scan() -> dict[str, Any]:
+async def quant_scan(refresh: bool = False) -> dict[str, Any]:
+    global _last_quant_scan
+    if _last_quant_scan and not refresh:
+        return {"data": _last_quant_scan, "cached": True}
+
     db_url = settings.get("database_url", "")
     if not db_url:
         return {"data": [], "error": "database_url not configured"}
@@ -567,24 +697,17 @@ async def quant_scan() -> dict[str, Any]:
     quant_cfg = settings.get("quant", {})
     ohlcv_repo = OhlcvRepository(db_url)
 
-    universe = quant_cfg.get("universe", [])
+    universe = list(quant_cfg.get("universe", []))
+    names: dict[str, str] = {}
+    if not universe:
+        universe, names = await _build_universe(quant_cfg)
     if not universe and _engine_ref:
         universe = list(_engine_ref._active_symbols)
     if not universe:
-        try:
-            broker = _engine_ref._broker if _engine_ref else None
-            if broker:
-                top = await broker.get_top_volume_stocks(30)
-                top = [s for s in top if not _is_etf(s.get("symbol", ""), s.get("name", ""))]
-                universe = [s["symbol"] for s in top]
-                if _state:
-                    for s in top:
-                        if s.get("name"):
-                            _state.symbol_names[s["symbol"]] = s["name"]
-        except Exception:
-            pass
-    if not universe:
         universe = settings.get("trading.symbols", ["005930"])
+
+    if _state and names:
+        _state.symbol_names.update({k: v for k, v in names.items() if v})
 
     ohlcv_repo.bulk_fetch(universe, interval="1d", period="3mo")
 
@@ -599,9 +722,10 @@ async def quant_scan() -> dict[str, Any]:
     screener.scan(universe, held_symbols=held)
     results = screener.get_last_scan()
 
-    names = _state.symbol_names if _state else {}
+    all_names = {**names, **(_state.symbol_names if _state else {})}
     for r in results:
-        r["name"] = names.get(r["symbol"], r["symbol"])
+        r["name"] = all_names.get(r["symbol"], r["symbol"])
+    _last_quant_scan = results
 
     return {"data": results}
 
@@ -698,15 +822,15 @@ async def update_settings(body: dict[str, Any]) -> dict[str, Any]:
     if "risk" in body and _engine_ref:
         r = body["risk"]
         rm = _engine_ref._risk
-        if "stop_loss_ratio" in r:
+        if r.get("stop_loss_ratio") is not None:
             rm.stop_loss_ratio = Decimal(str(r["stop_loss_ratio"]))
-        if "take_profit_ratio" in r:
+        if r.get("take_profit_ratio") is not None:
             rm.take_profit_ratio = Decimal(str(r["take_profit_ratio"]))
-        if "max_position_size" in r:
+        if r.get("max_position_size") is not None:
             rm.max_position_size = int(r["max_position_size"])
-        if "max_open_positions" in r:
+        if r.get("max_open_positions") is not None:
             rm.max_open_positions = int(r["max_open_positions"])
-        if "max_position_ratio" in r:
+        if r.get("max_position_ratio") is not None:
             rm.max_position_ratio = float(r["max_position_ratio"])
         applied.append("risk")
 
@@ -720,6 +844,10 @@ async def update_settings(body: dict[str, Any]) -> dict[str, Any]:
             params = cfg.get("params", {})
             if params:
                 s.configure(params)
+        scalping_on = [s.name for s in _registry_ref.all() if s.enabled and s.name in _SCALPING_STRATEGIES]
+        quant_on = [s.name for s in _registry_ref.all() if s.enabled and s.name in _QUANT_STRATEGIES]
+        settings.set("strategies.scalping_enabled", scalping_on)
+        settings.set("strategies.quant_enabled", quant_on)
         applied.append("strategies")
 
     if _sse:

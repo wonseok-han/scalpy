@@ -149,6 +149,7 @@
         <div id="strategy-chips" class="stock-chips" style="margin-top:6px">
           <span style="color:var(--text-tertiary);font-size:0.8rem">로딩 중...</span>
         </div>
+        <div id="strategy-params" style="margin-top:12px"></div>
       </div>
       <div class="actions-row">
         <button class="btn btn-primary" onclick="doRun()" id="btn-run">백테스트 실행</button>
@@ -421,6 +422,7 @@ async function doRun() {
     max_qty: parseInt(document.getElementById('max-qty').value) || 100,
     max_positions: parseInt(document.getElementById('max-positions').value) || 3,
     date: dt,
+    strategy_params: collectStratParams(),
   };
 
   setBtButtons(true);
@@ -677,6 +679,13 @@ async function loadStrategies() {
   }
 }
 
+const _paramLabels = {
+  short_window: '단기 이평', long_window: '장기 이평', window: '이평 기간',
+  num_std: '표준편차 배수', oversold: '과매도 기준', overbought: '과매수 기준',
+  bid_ask_ratio_threshold: '호가비율 임계값', deviation_threshold: 'VWAP 이탈',
+  cooldown_seconds: '쿨다운(초)', stop_loss_ratio: '전략 손절', take_profit_ratio: '전략 익절',
+};
+
 function toggleStrategy(name) {
   if (_stratEnabled.has(name)) _stratEnabled.delete(name);
   else _stratEnabled.add(name);
@@ -687,12 +696,39 @@ function renderStrategyChips() {
   const el = document.getElementById('strategy-chips');
   el.innerHTML = _strategies.map(s => {
     const sel = _stratEnabled.has(s.name) ? ' selected' : '';
-    const paramStr = Object.entries(s.params).map(([k,v]) => `${k}=${v}`).join(', ');
     return `<span class="stock-chip${sel}" onclick="toggleStrategy('${s.name}')" style="min-width:auto">
       <span class="chip-name">${s.display_name}</span>
-      <span class="chip-vol">${paramStr}</span>
     </span>`;
   }).join('');
+  renderStratParams();
+}
+
+function renderStratParams() {
+  const el = document.getElementById('strategy-params');
+  const enabled = _strategies.filter(s => _stratEnabled.has(s.name));
+  if (!enabled.length) { el.innerHTML = ''; return; }
+  el.innerHTML = enabled.map(s => {
+    const fields = Object.entries(s.params).map(([k, v]) => {
+      const label = _paramLabels[k] || k;
+      const step = typeof v === 'number' && !Number.isInteger(v) ? '0.001' : '1';
+      return `<div class="form-group"><label class="form-label">${label}</label><input type="number" class="form-input" id="sp-${s.name}-${k}" value="${v}" step="${step}"></div>`;
+    }).join('');
+    return `<div style="margin-bottom:12px"><div style="font-size:0.78rem;font-weight:600;color:var(--text-secondary);margin-bottom:6px">${s.display_name}</div><div class="form-grid">${fields}</div></div>`;
+  }).join('');
+}
+
+function collectStratParams() {
+  const params = {};
+  for (const s of _strategies) {
+    if (!_stratEnabled.has(s.name)) continue;
+    const p = {};
+    for (const k of Object.keys(s.params)) {
+      const input = document.getElementById(`sp-${s.name}-${k}`);
+      if (input) p[k] = parseFloat(input.value);
+    }
+    if (Object.keys(p).length) params[s.name] = p;
+  }
+  return params;
 }
 
 function getEnabledStrategies() { return [..._stratEnabled]; }

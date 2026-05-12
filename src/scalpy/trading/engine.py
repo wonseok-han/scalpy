@@ -250,6 +250,7 @@ class TradingEngine:
                 remaining = pos.quantity - qty
                 if remaining <= 0:
                     self.positions.remove(symbol)
+                    self._closed_symbols[symbol] = time.monotonic()
                 else:
                     pos.quantity = remaining
                     pos.current_price = price
@@ -374,6 +375,7 @@ class TradingEngine:
                         },
                     )
                 elif result.side == Side.SELL:
+                    self._closed_symbols[result.symbol] = time.monotonic()
                     if sell_pos:
                         pnl = (result.price - sell_pos.avg_price) * result.quantity
                         self._performance.record_trade(result.strategy, pnl)

@@ -1,3 +1,4 @@
+from decimal import Decimal
 from typing import Any
 
 import structlog
@@ -7,6 +8,33 @@ from scalpy.broker.base import BaseBroker
 logger = structlog.get_logger()
 
 _ETF_PREFIXES = ("KODEX", "TIGER", "KBSTAR", "RISE", "ARIRANG", "SOL", "ACE", "HANARO", "KOSEF", "PLUS")
+
+
+def _fetch_market_stocks() -> list[dict[str, Any]]:
+    """FinanceDataReader로 전체 KRX 보통주 당일 데이터 조회."""
+    import FinanceDataReader as fdr
+
+    df = fdr.StockListing("KRX")
+    df = df[df["Market"].isin(["KOSPI", "KOSDAQ"])]
+    # 우선주 제외
+    df = df[df["Code"].str[-1] == "0"]
+    # SPAC/관리종목 제외
+    exclude_dept = {"SPAC(소속부없음)", "관리종목(소속부없음)", "투자주의환기종목(소속부없음)"}
+    if "Dept" in df.columns:
+        df = df[~df["Dept"].isin(exclude_dept)]
+
+    stocks = []
+    for _, row in df.iterrows():
+        stocks.append({
+            "symbol": row["Code"],
+            "name": row["Name"],
+            "volume": int(row["Volume"]) if row["Volume"] else 0,
+            "price": Decimal(str(int(row["Close"]))) if row["Close"] else Decimal("0"),
+            "change_rate": float(row["ChagesRatio"]) if row["ChagesRatio"] else 0.0,
+            "volume_turnover": 0.0,
+        })
+    logger.info("screener.market_fetched", total=len(stocks))
+    return stocks
 
 
 class StockScreener:
@@ -30,7 +58,12 @@ class StockScreener:
     async def scan(self, held_symbols: list[str] | None = None) -> list[str]:
         held = set(held_symbols or [])
 
-        stocks = await self._broker.get_top_volume_stocks(30)
+        try:
+            import asyncio
+            stocks = await asyncio.to_thread(_fetch_market_stocks)
+        except Exception as e:
+            logger.warning("screener.fdr_failed_fallback_broker", error=str(e))
+            stocks = await self._broker.get_top_volume_stocks(30)
         if not stocks:
             logger.warning("screener.no_data")
             return list(held)

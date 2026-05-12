@@ -202,7 +202,7 @@ async def _start_trading(
     symbols: list[str] = []
 
     if mode in ("quant", "both"):
-        quant_symbols = await _quant_scan(engine, stop_event)
+        quant_symbols = await _quant_scan(engine, stream, stop_event)
         symbols.extend(quant_symbols)
 
     if mode in ("scalping", "both") and screening_enabled:
@@ -236,6 +236,7 @@ async def _start_trading(
 
 async def _quant_scan(
     engine: TradingEngine,
+    stream: "MarketDataStream",
     stop_event: asyncio.Event,
 ) -> list[str]:
     db_url = settings.get("database_url", "")
@@ -252,11 +253,20 @@ async def _quant_scan(
     universe = quant_cfg.get("universe", [])
     if not universe:
         try:
-            from scalpy.broker.base import BaseBroker
+            from scalpy.screening.quant_screener import scan_market_universe
+            min_cr = quant_cfg.get("min_change_rate", -2.0)
+            min_vol = quant_cfg.get("min_avg_volume", 500_000)
+            top_n = quant_cfg.get("universe_size", 100)
+            stocks = scan_market_universe(min_vol, min_cr, 0, top_n)
+            universe = [s["symbol"] for s in stocks]
+            logger.info("quant.market_universe", candidates=len(universe))
+        except Exception as e:
+            logger.warning("quant.market_universe_failed", error=str(e))
+    if not universe:
+        try:
             broker = engine._broker
             top_stocks = await broker.get_top_volume_stocks(30)
             universe = [s["symbol"] for s in top_stocks]
-            logger.info("quant.universe_from_broker", count=len(universe))
         except Exception as e:
             logger.warning("quant.universe_fallback", error=str(e))
             universe = settings.get("trading.symbols", ["005930"])
@@ -287,7 +297,70 @@ async def _quant_scan(
     if refresh > 0:
         asyncio.create_task(_ohlcv_refresh_loop(ohlcv_repo, universe, refresh, stop_event))
 
+    rescan_min = quant_cfg.get("rescan_interval_minutes", 30)
+    if rescan_min > 0:
+        asyncio.create_task(
+            _quant_rescan_loop(engine, ohlcv_repo, stream, rescan_min, stop_event)
+        )
+
     return symbols
+
+
+async def _quant_rescan_loop(
+    engine: TradingEngine,
+    ohlcv_repo: "OhlcvRepository",
+    stream: "MarketDataStream",
+    interval_minutes: int,
+    stop_event: asyncio.Event,
+) -> None:
+    from scalpy.screening.quant_screener import QuantScreener
+
+    while not stop_event.is_set():
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=interval_minutes * 60)
+            break
+        except asyncio.TimeoutError:
+            pass
+        try:
+            quant_cfg = settings.get("quant", {})
+            universe = list(quant_cfg.get("universe", []))
+            if not universe:
+                try:
+                    from scalpy.screening.quant_screener import scan_market_universe
+                    stocks = scan_market_universe(
+                        quant_cfg.get("min_avg_volume", 500_000),
+                        quant_cfg.get("min_change_rate", -2.0),
+                        0,
+                        quant_cfg.get("universe_size", 100),
+                    )
+                    universe = [s["symbol"] for s in stocks]
+                except Exception:
+                    universe = list(engine._active_symbols)
+
+            if not universe:
+                continue
+
+            ohlcv_repo.bulk_fetch(universe, interval="1d")
+
+            screener = QuantScreener(
+                ohlcv_repo=ohlcv_repo,
+                max_stocks=quant_cfg.get("max_stocks", 10),
+                momentum_days=quant_cfg.get("momentum_days", 20),
+                min_avg_volume=quant_cfg.get("min_avg_volume", 500_000),
+                min_momentum=quant_cfg.get("min_momentum", 0.0),
+            )
+            held = [p.symbol for p in engine.positions.all()]
+            new_symbols = screener.scan(universe, held_symbols=held)
+            if new_symbols:
+                await stream.update_subscriptions(new_symbols)
+                await engine.update_symbols(new_symbols)
+                for sym in new_symbols:
+                    candles = ohlcv_repo.get_candles(sym, interval="1d", limit=60)
+                    if candles:
+                        engine.prefill_strategies(sym, candles)
+                logger.info("quant_rescan.updated", symbols=new_symbols)
+        except Exception as e:
+            logger.warning("quant_rescan.failed", error=str(e))
 
 
 async def _ohlcv_refresh_loop(
