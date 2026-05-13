@@ -51,6 +51,10 @@ class BaseBroker(ABC):
         """기간손익현황 조회 (실거래만)."""
         return []
 
+    async def get_daily_profit_summary(self) -> dict[str, Any]:
+        """당일 실현손익 요약 조회 (실거래만)."""
+        return {}
+
     @abstractmethod
     async def get_top_volume_stocks(self, count: int = 30) -> list[dict[str, Any]]:
         """거래량 상위 종목 조회."""

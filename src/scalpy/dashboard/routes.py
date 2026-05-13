@@ -114,6 +114,10 @@ async def _sync_trades_now() -> None:
         if trades:
             reasons = getattr(_engine_ref, "_trade_reasons", {})
             _trade_repo_ref.sync_trades(trades, reason_map=reasons)
+        if not settings.get("mock", True):
+            profit_records = await broker.get_period_pnl()
+            if profit_records and _trade_repo_ref:
+                _trade_repo_ref.correct_pnl_from_api(profit_records)
         await _refresh_pnl_cache()
         if _trade_repo_ref:
             _perf_cache = _trade_repo_ref.get_strategy_performance()
@@ -165,7 +169,7 @@ async def _perf_sync_loop() -> None:
 
 
 async def _refresh_pnl_cache() -> None:
-    """실거래: KIS 기간손익 API에서 실현손익/수수료를 가져와 캐싱."""
+    """실거래: KIS 기간별손익일별합산(TTTC8708R)에서 당일 실현손익/수수료를 캐싱."""
     if not _state or not _engine_ref:
         return
     broker = _engine_ref._broker
@@ -173,18 +177,13 @@ async def _refresh_pnl_cache() -> None:
     if mock:
         return
     try:
-        records = await broker.get_period_pnl()
-        if not records:
+        summary = await broker.get_daily_profit_summary()
+        if not summary:
             return
-        total_pnl = 0
-        total_fees = 0
-        for r in records:
-            pnl_str = r.get("pnl", "")
-            if pnl_str:
-                total_pnl += int(pnl_str)
-            total_fees += r.get("fee", 0)
-        _state.last_daily_pnl = str(total_pnl)
-        _state.last_daily_fees = str(total_fees)
+        _state.last_daily_pnl = str(summary.get("tot_rlzt_pfls", 0))
+        _state.last_daily_fees = str(
+            summary.get("tot_fee", 0) + summary.get("tot_tltx", 0)
+        )
     except Exception as e:
         logger.warning("routes.pnl_cache_failed", error=str(e))
 
@@ -853,6 +852,16 @@ async def performance() -> dict[str, Any]:
         except Exception:
             pass
     return {"data": _engine_ref._performance.all_stats()}
+
+
+@router.get("/performance/history")
+async def performance_history() -> dict[str, Any]:
+    if not _trade_repo_ref:
+        return {"data": []}
+    try:
+        return {"data": _trade_repo_ref.get_daily_performance_history()}
+    except Exception:
+        return {"data": []}
 
 
 @router.get("/quant/config")

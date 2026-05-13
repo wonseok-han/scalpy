@@ -296,6 +296,67 @@ class KISBroker(BaseBroker):
             return []
         return await self._get_trade_history_profit()
 
+    async def get_daily_profit_summary(self) -> dict[str, Any]:
+        if not self._connected or self._api is None or self._mock:
+            return {}
+        return await self._get_period_profit_summary()
+
+    async def _get_period_profit_summary(self) -> dict[str, Any]:
+        """실거래: 기간별손익일별합산조회 TTTC8708R — 당일 실현손익/수수료 요약."""
+        rest_urls = settings.get("kis_api.rest_urls", {})
+        base_url = rest_urls.get("real")
+        if not base_url:
+            return {}
+
+        today = datetime.now().strftime("%Y%m%d")
+        headers = {
+            "content-type": "application/json; charset=utf-8",
+            "appkey": self._app_key,
+            "appsecret": self._app_secret,
+            "tr_id": "TTTC8708R",
+            "custtype": "P",
+        }
+        params = {
+            "CANO": self._cano,
+            "ACNT_PRDT_CD": self._acnt_prdt_cd,
+            "INQR_STRT_DT": today,
+            "INQR_END_DT": today,
+            "PDNO": "",
+            "SORT_DVSN": "00",
+            "INQR_DVSN": "00",
+            "CBLC_DVSN": "00",
+            "CTX_AREA_FK100": "",
+            "CTX_AREA_NK100": "",
+        }
+
+        await self._throttle()
+        try:
+            def _fetch():
+                h = {**headers, "authorization": self._api.token.value}
+                return requests.get(
+                    f"{base_url}/uapi/domestic-stock/v1/trading/inquire-period-profit",
+                    headers=h, params=params, timeout=10,
+                )
+
+            resp = await asyncio.to_thread(self._retry_on_token_expired_resp, _fetch)
+            data = resp.json()
+            if data.get("rt_cd") != "0":
+                logger.warning("kis_broker.period_profit_error", msg=data.get("msg1", ""), code=data.get("msg_cd", ""))
+                return {}
+
+            out2 = data.get("output2", {})
+            result = {
+                "tot_rlzt_pfls": int(out2.get("tot_rlzt_pfls", "0")),
+                "tot_fee": int(out2.get("tot_fee", "0")),
+                "tot_tltx": int(out2.get("tot_tltx", "0")),
+                "loan_int": int(out2.get("loan_int", "0")),
+            }
+            logger.info("kis_broker.period_profit_fetched", **result)
+            return result
+        except Exception as e:
+            logger.error("kis_broker.period_profit_failed", error=str(e))
+            return {}
+
     async def _get_trade_history_profit(self) -> list[dict[str, Any]]:
         """실거래: 기간별매매손익현황조회 (수수료/손익 포함)."""
         rest_urls = settings.get("kis_api.rest_urls", {})
@@ -362,22 +423,20 @@ class KISBroker(BaseBroker):
                 symbol = item.get("pdno", "")
                 if not symbol:
                     continue
-                side_name = item.get("trad_dvsn_name", "")
-                side = "sell" if "매도" in side_name else "buy"
-                qty = int(item.get("sll_qty", "0") if side == "sell" else item.get("buy_qty", "0"))
-                if qty == 0:
+                sll_qty = int(item.get("sll_qty", "0"))
+                if sll_qty == 0:
                     continue
-                price = int(item.get("sll_pric", "0") if side == "sell" else item.get("pchs_unpr", "0"))
                 fee = int(item.get("fee", "0")) + int(item.get("tl_tax", "0"))
                 pnl = item.get("rlzt_pfls", "")
 
                 trades.append({
                     "symbol": symbol,
                     "name": item.get("prdt_name", ""),
-                    "side": side,
-                    "price": price,
-                    "quantity": qty,
-                    "amount": int(item.get("sll_amt", "0") if side == "sell" else item.get("buy_amt", "0")),
+                    "side": "sell",
+                    "price": int(item.get("sll_pric", "0")),
+                    "quantity": sll_qty,
+                    "amount": int(item.get("sll_amt", "0")),
+                    "buy_amt": int(item.get("buy_amt", "0")),
                     "time": item.get("trad_dt", ""),
                     "fee": fee,
                     "pnl": pnl if pnl and pnl != "0" else "",

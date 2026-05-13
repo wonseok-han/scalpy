@@ -184,10 +184,10 @@ class TradeRepository:
                 ).order_by(TradeRow.order_date, TradeRow.ord_time)
             ).all()
 
-            buy_queue: list[tuple[int, float]] = []
+            buy_queue: list[tuple[int, float, int]] = []
             for b in buys:
                 if b.tot_ccld_qty > 0 and b.avg_price > 0:
-                    buy_queue.append((b.tot_ccld_qty, float(b.avg_price)))
+                    buy_queue.append((b.tot_ccld_qty, float(b.avg_price), b.fee))
 
             qi = 0
             remaining = buy_queue[0][0] if buy_queue else 0
@@ -199,10 +199,12 @@ class TradeRepository:
 
                 to_match = sell.tot_ccld_qty
                 total_buy_cost = 0.0
+                total_buy_fee = 0
 
                 while to_match > 0 and qi < len(buy_queue):
                     take = min(to_match, remaining)
                     total_buy_cost += take * buy_queue[qi][1]
+                    total_buy_fee += buy_queue[qi][2] * take // buy_queue[qi][0]
                     to_match -= take
                     remaining -= take
                     if remaining <= 0:
@@ -215,10 +217,55 @@ class TradeRepository:
 
                 matched_qty = sell.tot_ccld_qty
                 buy_avg = total_buy_cost / matched_qty
-                buy_fee = int(total_buy_cost * float(_COMMISSION_RATE))
-                sell.pnl = int((sell.avg_price - buy_avg) * matched_qty - sell.fee - buy_fee)
+                sell.pnl = int((sell.avg_price - buy_avg) * matched_qty - sell.fee - total_buy_fee)
 
         session.commit()
+
+    def correct_pnl_from_api(self, profit_records: list[dict]) -> int:
+        """TTTC8715R 종목별 실제 pnl(수수료/세금 차감 후)로 DB 매도 건을 보정."""
+        if not profit_records:
+            return 0
+        today = date.today().strftime("%Y%m%d")
+        corrected = 0
+        with Session(self._engine) as session:
+            for rec in profit_records:
+                symbol = rec.get("symbol", "")
+                if not symbol or rec.get("side") != "sell":
+                    continue
+                actual_pnl_str = rec.get("pnl", "")
+                if not actual_pnl_str:
+                    continue
+                actual_pnl = int(actual_pnl_str)
+
+                sells = session.scalars(
+                    select(TradeRow).where(
+                        TradeRow.symbol == symbol,
+                        TradeRow.side == "sell",
+                        TradeRow.order_date == today,
+                        TradeRow.mock == self._mock,
+                    ).order_by(TradeRow.ord_time)
+                ).all()
+                if not sells:
+                    continue
+
+                if len(sells) == 1:
+                    sells[0].pnl = actual_pnl
+                    corrected += 1
+                else:
+                    total_amt = sum(s.tot_ccld_amt for s in sells) or 1
+                    pnl_remaining = actual_pnl
+                    for i, s in enumerate(sells):
+                        if i == len(sells) - 1:
+                            s.pnl = pnl_remaining
+                        else:
+                            s.pnl = int(actual_pnl * s.tot_ccld_amt / total_amt)
+                            pnl_remaining -= s.pnl
+                        corrected += 1
+
+            if corrected:
+                session.commit()
+                logger.info("trade_sync.pnl_corrected", count=corrected)
+        return corrected
 
     def recalc_all_pnl(self) -> int:
         """전체 종목의 pnl을 FIFO로 재계산. 반환값: 갱신된 sell 건수."""
@@ -247,10 +294,10 @@ class TradeRepository:
                     ).order_by(TradeRow.order_date, TradeRow.ord_time)
                 ).all()
 
-                buy_queue: list[tuple[int, float]] = []
+                buy_queue: list[tuple[int, float, int]] = []
                 for b in buys:
                     if b.tot_ccld_qty > 0 and b.avg_price > 0:
-                        buy_queue.append((b.tot_ccld_qty, float(b.avg_price)))
+                        buy_queue.append((b.tot_ccld_qty, float(b.avg_price), b.fee))
 
                 qi = 0
                 remaining = buy_queue[0][0] if buy_queue else 0
@@ -262,10 +309,12 @@ class TradeRepository:
 
                     to_match = sell.tot_ccld_qty
                     total_buy_cost = 0.0
+                    total_buy_fee = 0
 
                     while to_match > 0 and qi < len(buy_queue):
                         take = min(to_match, remaining)
                         total_buy_cost += take * buy_queue[qi][1]
+                        total_buy_fee += buy_queue[qi][2] * take // buy_queue[qi][0]
                         to_match -= take
                         remaining -= take
                         if remaining <= 0:
@@ -278,8 +327,7 @@ class TradeRepository:
 
                     matched_qty = sell.tot_ccld_qty
                     buy_avg = total_buy_cost / matched_qty
-                    buy_fee = int(total_buy_cost * float(_COMMISSION_RATE))
-                    sell.pnl = int((sell.avg_price - buy_avg) * matched_qty - sell.fee - buy_fee)
+                    sell.pnl = int((sell.avg_price - buy_avg) * matched_qty - sell.fee - total_buy_fee)
                     updated += 1
 
             session.commit()
@@ -320,12 +368,15 @@ class TradeRepository:
             return int(result or 0)
 
 
-    def get_strategy_performance(self) -> dict[str, dict]:
+    def get_strategy_performance(self, day: date | None = None) -> dict[str, dict]:
         """trades 테이블에서 전략별 라운드트립(매수→매도) 기반 성과 집계."""
+        day = day or date.today()
+        day_str = day.strftime("%Y%m%d")
         with Session(self._engine) as session:
             symbols = [r[0] for r in session.execute(
                 select(TradeRow.symbol).where(
                     TradeRow.side == "sell",
+                    TradeRow.order_date == day_str,
                     TradeRow.mock == self._mock,
                     TradeRow.strategy != "",
                 ).group_by(TradeRow.symbol)
@@ -344,14 +395,15 @@ class TradeRepository:
                     select(TradeRow).where(
                         TradeRow.symbol == symbol,
                         TradeRow.side == "sell",
+                        TradeRow.order_date == day_str,
                         TradeRow.mock == self._mock,
                     ).order_by(TradeRow.order_date, TradeRow.ord_time)
                 ).all()
 
-                buy_queue: list[tuple[int, float, str, str]] = []
+                buy_queue: list[tuple[int, float, str, str, int]] = []
                 for b in buys:
                     if b.tot_ccld_qty > 0 and b.avg_price > 0:
-                        buy_queue.append((b.tot_ccld_qty, float(b.avg_price), b.order_date, b.strategy))
+                        buy_queue.append((b.tot_ccld_qty, float(b.avg_price), b.order_date, b.strategy, b.fee))
 
                 qi = 0
                 remaining = buy_queue[0][0] if buy_queue else 0
@@ -365,11 +417,13 @@ class TradeRepository:
 
                     to_match = sell.tot_ccld_qty
                     total_buy_cost = 0.0
+                    total_buy_fee = 0
                     buy_date = buy_queue[qi][2] if qi < len(buy_queue) else sell.order_date
 
                     while to_match > 0 and qi < len(buy_queue):
                         take = min(to_match, remaining)
                         total_buy_cost += take * buy_queue[qi][1]
+                        total_buy_fee += buy_queue[qi][4] * take // buy_queue[qi][0]
                         buy_date = buy_queue[qi][2]
                         to_match -= take
                         remaining -= take
@@ -382,8 +436,10 @@ class TradeRepository:
 
                     matched_qty = sell.tot_ccld_qty
                     buy_avg = total_buy_cost / matched_qty
-                    buy_fee = int(total_buy_cost * float(_COMMISSION_RATE))
-                    pnl = int((sell.avg_price - buy_avg) * matched_qty - sell.fee - buy_fee)
+                    if sell.pnl is not None:
+                        pnl = sell.pnl
+                    else:
+                        pnl = int((sell.avg_price - buy_avg) * matched_qty - sell.fee - total_buy_fee)
                     pnl_pct = round((sell.avg_price - buy_avg) / buy_avg * 100, 2) if buy_avg > 0 else 0.0
                     cross_day = buy_date != sell.order_date
 
@@ -418,6 +474,45 @@ class TradeRepository:
                 s["max_drawdown"] = str(s["max_drawdown"])
                 del s["_peak"]
             return stats
+
+    def get_daily_performance_history(self) -> list[dict]:
+        """일자별 전략 성과 히스토리."""
+        with Session(self._engine) as session:
+            dates = [r[0] for r in session.execute(
+                select(TradeRow.order_date).where(
+                    TradeRow.side == "sell",
+                    TradeRow.mock == self._mock,
+                ).group_by(TradeRow.order_date)
+                .order_by(TradeRow.order_date.desc())
+            ).all()]
+
+        result = []
+        cumulative_pnl = 0
+        for day_str in reversed(dates):
+            from datetime import datetime as dt
+            day = dt.strptime(day_str, "%Y%m%d").date()
+            perf = self.get_strategy_performance(day=day)
+            day_trades = 0
+            day_wins = 0
+            day_losses = 0
+            day_pnl = 0
+            for s in perf.values():
+                day_trades += s["trades"]
+                day_wins += s["wins"]
+                day_losses += s["losses"]
+                day_pnl += int(s["total_pnl"])
+            cumulative_pnl += day_pnl
+            result.append({
+                "date": f"{day_str[:4]}-{day_str[4:6]}-{day_str[6:]}",
+                "trades": day_trades,
+                "wins": day_wins,
+                "losses": day_losses,
+                "win_rate": round(day_wins / day_trades * 100, 1) if day_trades > 0 else 0.0,
+                "pnl": day_pnl,
+                "cumulative_pnl": cumulative_pnl,
+            })
+        result.reverse()
+        return result
 
     def save_position_open(
         self, symbol: str, strategy: str, opened_at: "datetime | None" = None,

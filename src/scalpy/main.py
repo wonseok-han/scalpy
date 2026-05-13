@@ -86,6 +86,7 @@ async def _trade_sync_loop(
     stop_event: asyncio.Event,
     engine: "TradingEngine | None" = None,
 ) -> None:
+    mock = settings.get("mock", True)
     while not stop_event.is_set():
         try:
             trades = await broker.get_trade_history()
@@ -94,6 +95,10 @@ async def _trade_sync_loop(
                 count = trade_repo.sync_trades(trades, reason_map=reasons)
                 if count:
                     logger.info("trade_sync.new_trades", count=count)
+            if not mock:
+                profit_records = await broker.get_period_pnl()
+                if profit_records:
+                    trade_repo.correct_pnl_from_api(profit_records)
         except Exception as e:
             logger.error("trade_sync.error", error=str(e))
 
