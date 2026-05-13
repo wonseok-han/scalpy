@@ -46,6 +46,7 @@ _SSE_EVENTS = [
     "tick.received", "order.filled", "signal.generated",
     "position.opened", "position.closed", "position.updated",
     "screening.completed", "engine.started", "engine.stopped",
+    "engine.daily_init",
 ]
 
 
@@ -77,6 +78,7 @@ def init_routes(
         for event in _SSE_EVENTS:
             bus.subscribe(event, _on_state_change)
         bus.subscribe("order.filled", _on_order_filled)
+        bus.subscribe("engine.daily_init", _on_daily_init)
 
     logger.info("routes.initialized", engine=engine is not None, screener=screener is not None, stream=stream is not None)
 
@@ -93,6 +95,12 @@ def _on_order_filled(data: dict[str, Any]) -> None:
     asyncio.create_task(_sync_trades_now())
 
 
+def _on_daily_init(data: dict[str, Any]) -> None:
+    if not _trading_started:
+        return
+    asyncio.create_task(_daily_rescan(data.get("date", "")))
+
+
 async def _sync_trades_now() -> None:
     try:
         broker = _engine_ref._broker
@@ -105,6 +113,50 @@ async def _sync_trades_now() -> None:
             _sse.broadcast("state", _build_sse_state())
     except Exception as e:
         logger.error("routes.trade_sync_failed", error=str(e))
+
+
+async def _daily_rescan(date: str) -> None:
+    global _last_quant_scan
+    logger.info("routes.daily_rescan_start", date=date)
+
+    _last_quant_scan = []
+    if _state:
+        _state.last_daily_pnl = ""
+        _state.last_daily_fees = ""
+
+    quant_on = settings.get("strategies.quant_enabled", [])
+    if quant_on:
+        try:
+            quant_symbols = await _quant_start()
+            if quant_symbols and _stream_ref:
+                held = [p.symbol for p in _engine_ref.positions.all()] if _engine_ref else []
+                await _stream_ref.update_subscriptions(list(set(quant_symbols) | set(held)))
+            logger.info("routes.daily_rescan.quant_done", symbols=quant_symbols)
+        except Exception as e:
+            logger.error("routes.daily_rescan.quant_failed", error=str(e))
+
+    scalping_on = settings.get("strategies.scalping_enabled", [])
+    if scalping_on and _screener_ref and _engine_ref:
+        try:
+            held = [p.symbol for p in _engine_ref.positions.all()]
+            max_price = 0
+            try:
+                bal = await _engine_ref._broker.get_balance()
+                max_price = int(bal)
+            except Exception:
+                pass
+            symbols = await _screener_ref.scan(held_symbols=held, max_price=max_price)
+            if symbols:
+                if _stream_ref:
+                    await _stream_ref.update_subscriptions(list(set(symbols) | set(held)))
+                await _engine_ref.update_symbols(symbols)
+            logger.info("routes.daily_rescan.scalping_done", symbols=symbols)
+        except Exception as e:
+            logger.error("routes.daily_rescan.scalping_failed", error=str(e))
+
+    if _sse:
+        _sse.broadcast("state", _build_sse_state())
+    logger.info("routes.daily_rescan_done", date=date)
 
 
 async def _refresh_pnl_cache() -> None:

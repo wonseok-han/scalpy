@@ -30,9 +30,11 @@ _SPLIT_SELL_DELAY = 1.0
 _UNFILLED_CANCEL_INTERVAL = 60
 _MIN_PROFIT_RATIO = Decimal("0.005")
 _KST = zoneinfo.ZoneInfo("Asia/Seoul")
+_MARKET_OPEN = dt_time(9, 0)
 _CUTOFF_BUY = dt_time(15, 15)
 _CUTOFF_CLOSE = dt_time(15, 18)
 _MARKET_END = dt_time(15, 30)
+_PRE_MARKET_INIT = dt_time(8, 50)
 
 
 class TradingEngine:
@@ -63,6 +65,7 @@ class TradingEngine:
         self._trade_repo: Any = None
         self._pending_buy_cost: Decimal = Decimal("0")
         self._last_unfilled_cancel: float = 0
+        self._last_daily_init: str = ""
 
     def set_trade_repo(self, repo: Any) -> None:
         self._trade_repo = repo
@@ -183,6 +186,7 @@ class TradingEngine:
             if not self._sync_running:
                 break
             try:
+                await self._daily_init()
                 await self.sync_positions()
                 now = time.monotonic()
                 if now - self._last_unfilled_cancel >= _UNFILLED_CANCEL_INTERVAL:
@@ -194,6 +198,41 @@ class TradingEngine:
                     await self._bus.emit("position.updated", {})
             except Exception as e:
                 logger.warning("engine.sync_loop_failed", error=str(e))
+
+    async def _daily_init(self) -> None:
+        now = datetime.now(_KST)
+        today = now.strftime("%Y%m%d")
+        if self._last_daily_init == today:
+            return
+        if now.time() < _PRE_MARKET_INIT:
+            return
+
+        logger.info("engine.daily_init_start", date=today)
+
+        cancelled = await self._broker.cancel_all_orders()
+        if cancelled > 0:
+            logger.info("engine.daily_init.cancelled_orders", count=cancelled)
+
+        await self.sync_positions()
+
+        self._cached_balance = Decimal("0")
+        self._balance_fetched_at = 0
+        await self.get_cached_balance()
+
+        self._rejected_symbols.clear()
+        self._closed_symbols.clear()
+        self._pending_buy_cost = Decimal("0")
+        self._market_close_done = False
+
+        self._last_daily_init = today
+        logger.info("engine.daily_init_done", date=today)
+
+        if self._bus:
+            await self._bus.emit("engine.daily_init", {"date": today})
+
+    def _is_market_hours(self) -> bool:
+        now_kst = datetime.now(_KST).time()
+        return _MARKET_OPEN <= now_kst <= _MARKET_END
 
     async def on_tick(self, symbol: str, price: Decimal, volume: int) -> None:
         if not self._running:
@@ -210,6 +249,10 @@ class TradingEngine:
                 await self._bus.emit(
                     "position.updated", {"symbol": symbol, "current_price": str(price)}
                 )
+
+        if not self._is_market_hours():
+            return
+
         await self._check_risk(symbol)
         await self._check_market_close()
 
@@ -224,7 +267,7 @@ class TradingEngine:
         asks: list[tuple[Decimal, int]],
         bids: list[tuple[Decimal, int]],
     ) -> None:
-        if not self._running:
+        if not self._running or not self._is_market_hours():
             return
 
         for strategy in self._registry.enabled():
