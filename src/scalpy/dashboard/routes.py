@@ -577,6 +577,9 @@ async def start_engine(req: StartRequest | None = None) -> dict[str, Any]:
     try:
         if not _engine_ref._broker._connected:
             await _engine_ref._broker.connect()
+        cancelled = await _engine_ref._broker.cancel_all_orders()
+        if cancelled > 0:
+            logger.info("dashboard.cleared_unfilled_orders", count=cancelled)
         await _engine_ref.sync_positions()
         _engine_ref._running = True
         _engine_ref.start_background_loops()

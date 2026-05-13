@@ -60,6 +60,7 @@ class TradingEngine:
         self._active_symbols: set[str] = set()
         self._performance = PerformanceTracker()
         self._trade_repo: Any = None
+        self._pending_buy_cost: Decimal = Decimal("0")
 
     def set_trade_repo(self, repo: Any) -> None:
         self._trade_repo = repo
@@ -319,12 +320,15 @@ class TradingEngine:
                 return
 
         balance = await self.get_cached_balance()
+        available = balance - self._pending_buy_cost
+        if available <= 0 and signal.side == Side.BUY:
+            return
         positions_value = sum(
             p.current_price * p.quantity for p in self.positions.all()
         )
         total_asset = balance + positions_value
         qty = self._risk.get_max_position_size(
-            signal.symbol, balance, signal.price, total_asset=total_asset,
+            signal.symbol, available, signal.price, total_asset=total_asset,
         )
 
         sell_pos: Position | None = None
@@ -345,7 +349,7 @@ class TradingEngine:
 
         order = self._orders.signal_to_order(signal, qty)
 
-        if signal.side == Side.BUY and not self._risk.validate_order(order, balance):
+        if signal.side == Side.BUY and not self._risk.validate_order(order, available):
             return
 
         if self._bus:
@@ -360,7 +364,10 @@ class TradingEngine:
                 },
             )
 
+        buy_cost = order.price * order.quantity if signal.side == Side.BUY else Decimal("0")
+        self._pending_buy_cost += buy_cost
         result = await self._orders.submit(order)
+        self._pending_buy_cost -= buy_cost
         if result.status == OrderStatus.REJECTED:
             if "매매불가" in result.reject_reason or "잔고" in result.reject_reason:
                 self._untradeable.add(signal.symbol)

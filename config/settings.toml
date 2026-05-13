@@ -167,7 +167,7 @@ take_profit_ratio = 0.04
 
 [default.strategies.factor]
 # 팩터 관측 윈도우
-lookback = 20
+lookback = 30
 # 팩터 점수 임계값 (0~1, 높을수록 보수적)
 buy_threshold = 0.55
 sell_threshold = 0.55

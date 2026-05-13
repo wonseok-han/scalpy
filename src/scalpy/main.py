@@ -414,6 +414,9 @@ async def run() -> None:
         trade_repo = None
 
     await broker.connect()
+    cancelled = await broker.cancel_all_orders()
+    if cancelled > 0:
+        logger.info("scalpy.cleared_unfilled_orders", count=cancelled)
     await engine.sync_positions()
     await engine.get_cached_balance()
     engine.start_sync_loop()

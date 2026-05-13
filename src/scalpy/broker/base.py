@@ -28,6 +28,9 @@ class BaseBroker(ABC):
     @abstractmethod
     async def cancel_order(self, order_id: str) -> bool: ...
 
+    async def cancel_all_orders(self) -> int:
+        return 0
+
     @abstractmethod
     async def sync_positions(self) -> int:
         """Fetch positions from external source and update internal cache."""

@@ -58,7 +58,8 @@ class RiskManager:
     def check_stagnation(self, position: Position) -> bool:
         if self.stagnation_hours <= 0 or position.quantity == 0:
             return False
-        elapsed = (datetime.now() - position.opened_at).total_seconds() / 3600
+        now = datetime.now(position.opened_at.tzinfo)
+        elapsed = (now - position.opened_at).total_seconds() / 3600
         if elapsed < self.stagnation_hours:
             return False
         change = abs(position.current_price - position.avg_price) / position.avg_price
