@@ -7,7 +7,6 @@
 ## 주요 기능
 
 - **8개 전략**: 스캘핑 5개 (MA 교차, 볼린저, RSI, 호가창, VWAP) + 퀀트 3개 (모멘텀, 평균회귀, 팩터)
-- **트레이딩 모드**: scalping / quant / both 모드 선택
 - **FDR 기반 전체 시장 스크리닝**: FinanceDataReader로 KRX 2700+ 종목 중 자동 선별
 - **퀀트 스크리닝**: OHLCV 기반 모멘텀/거래량/변동성 팩터 스코어링
 - **균등 분배 포지션 사이징**: 총 자산 ÷ max_open_positions 자동 계산
@@ -47,13 +46,33 @@ MarketData (WebSocket) → Strategy Engine → Signal → Cooldown → Risk Chec
 
 ## 설치
 
+### Docker (권장)
+
 ```bash
 git clone https://github.com/wonseok-han/scalpy.git
 cd scalpy
 
+cp config/.secrets.toml.sample config/.secrets.toml
+# config/.secrets.toml에 KIS API 키 입력
+
+docker compose up -d
+```
+
+PostgreSQL + scalpy가 함께 시작됩니다. 크래시 시 자동 재시작.
+
+대시보드: http://localhost:8080
+
+### 로컬 설치
+
+```bash
 conda create -n scalpy python=3.12
 conda activate scalpy
 pip install -e ".[dev]"
+
+# PostgreSQL 먼저 실행
+docker compose up -d postgres
+
+python -m scalpy.main
 ```
 
 ## 설정
@@ -83,14 +102,6 @@ KIS_ACCOUNT_NO = "12345678-01"
 [default]
 mock = true  # 모의투자 모드 (실거래: false)
 
-[default.kis_api.ws_urls]
-virtual = "ws://ops.koreainvestment.com:31000"
-real = "ws://ops.koreainvestment.com:21000"
-
-[default.kis_api.rest_urls]
-virtual = "https://openapivts.koreainvestment.com:29443"
-real = "https://openapi.koreainvestment.com:9443"
-
 [default.trading]
 auto_start = false          # 대시보드에서 수동 시작
 symbols = ["005930", "000660"]
@@ -100,21 +111,13 @@ max_position_size = 100     # 종목당 최대 수량
 max_open_positions = 3      # 동시 보유 최대 포지션 수
 
 [default.strategies]
-enabled = ["ma_cross", "bollinger"]  # 초기 활성 전략 (UI에서 토글 가능)
+scalping_enabled = []                  # 스캘핑 전략 (ma_cross, bollinger, rsi, orderbook, vwap)
+quant_enabled = ["factor"]             # 퀀트 전략 (momentum, mean_reversion, factor)
 
 [default.dashboard]
 enabled = true
 port = 8080
 ```
-
-## 실행
-
-```bash
-conda activate scalpy
-python -m scalpy.main
-```
-
-대시보드: http://localhost:8080
 
 ## 테스트
 
@@ -161,7 +164,8 @@ python scripts/test_websocket.py    # WebSocket 시세 수신 테스트
 - **SSE (Server-Sent Events)** — 실시간 데이터 푸시
 - **websockets** — 실시간 시세 수신 + 자동 재연결
 - **structlog** — 구조화된 로깅
-- **dynaconf** — 설정 관리
+- **dynaconf** — 설정 관리 (환경변수 오버라이드: `SCALPY_` 접두사)
+- **Docker Compose** — PostgreSQL + scalpy 원클릭 배포
 
 ## 안전 원칙
 

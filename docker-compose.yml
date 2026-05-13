@@ -9,3 +9,15 @@ services:
       - "5432:5432"
     volumes:
       - ./.data/postgres:/var/lib/postgresql/data
+
+  scalpy:
+    build: .
+    depends_on:
+      - postgres
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./config/.secrets.toml:/app/config/.secrets.toml:ro
+    environment:
+      - SCALPY_DATABASE_URL=postgresql://scalpy:scalpy@postgres:5432/scalpy
+    restart: unless-stopped
