@@ -50,6 +50,7 @@ class TradingEngine:
         self._running = False
         self._bus: EventBus | None = None
         self._cached_balance: Decimal = Decimal("0")
+        self._cached_available_cash: Decimal = Decimal("0")
         self._balance_fetched_at: float = 0
         self._market_close_done = False
         self._last_sync_at: float = 0
@@ -85,6 +86,7 @@ class TradingEngine:
         if now - self._balance_fetched_at > _BALANCE_CACHE_TTL:
             try:
                 self._cached_balance = await self._broker.get_balance()
+                self._cached_available_cash = await self._broker.get_available_cash()
                 self._balance_fetched_at = now
             except Exception as e:
                 logger.warning("engine.balance_fetch_failed", error=str(e))
@@ -109,9 +111,12 @@ class TradingEngine:
         if self._trade_repo:
             try:
                 db_times = self._trade_repo.get_open_position_times()
+                strat_map = self._trade_repo.get_position_strategies()
                 for pos in self.positions.all():
                     if pos.symbol in db_times:
                         pos.opened_at = db_times[pos.symbol]
+                    if pos.strategy == "synced" and pos.symbol in strat_map:
+                        pos.strategy = strat_map[pos.symbol]
             except Exception:
                 pass
 

@@ -77,6 +77,10 @@ class MockBroker(BaseBroker):
     async def get_balance(self) -> Decimal:
         return self._balance
 
+    async def get_available_cash(self) -> Decimal:
+        invested = sum(p.avg_price * p.quantity for p in self._pm.all())
+        return self._balance - invested
+
     async def get_trade_history(self) -> list[dict[str, Any]]:
         return []
 

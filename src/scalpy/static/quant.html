@@ -59,13 +59,14 @@
 
 
 /* ── Quant-specific ── */
-.config-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; }
-.config-item { display: flex; justify-content: space-between; align-items: center; padding: 8px 0; }
-.config-label { font-size: 0.78rem; color: var(--text-secondary); }
-.config-value { font-size: 0.82rem; font-weight: 600; color: var(--text-primary); }
+.config-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 0; }
+.config-cell { padding: 14px 18px; border-right: 1px solid var(--border); }
+.config-cell:last-child { border-right: none; }
+.config-cell .cl { display: block; font-size: 0.68rem; color: var(--text-tertiary); font-weight: 500; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px; }
+.config-cell .cv { font-size: 1rem; font-weight: 700; color: var(--text-primary); font-variant-numeric: tabular-nums; }
 
-.score-bar { width: 60px; height: 6px; background: var(--bg-elevated); border-radius: 3px; display: inline-block; vertical-align: middle; margin-left: 6px; }
-.score-fill { height: 100%; border-radius: 3px; background: var(--accent); }
+.score-bar { width: 48px; height: 6px; background: var(--bg-elevated); border-radius: 3px; display: inline-block; vertical-align: middle; margin-left: 6px; overflow: hidden; }
+.score-fill { height: 100%; border-radius: 3px; min-width: 2px; background: linear-gradient(90deg, var(--accent), #4ade80); }
 
 .strat-chip {
   background: var(--accent-soft); border: 1px solid rgba(139,92,246,0.2);
@@ -152,24 +153,24 @@
       <div class="metric-sub" id="balance-prev">-</div>
     </div>
     <div class="metric-card">
+      <div class="metric-label">매수금액</div>
+      <div class="metric-value" id="invested">-</div>
+      <div class="metric-sub" id="invested-sub">보유 종목 매입 합계</div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-label">주문가능금액</div>
+      <div class="metric-value" id="available-balance">-</div>
+      <div class="metric-sub" id="pending-orders">미체결: 0건</div>
+    </div>
+    <div class="metric-card">
       <div class="metric-label">당일 실현손익</div>
       <div class="metric-value" id="daily-pnl">-</div>
       <div class="metric-sub" id="daily-fees">수수료+세금: 0원</div>
     </div>
     <div class="metric-card">
-      <div class="metric-label">보유 포지션</div>
-      <div class="metric-value" id="pos-count">0</div>
-      <div class="metric-sub">Active Positions</div>
-    </div>
-    <div class="metric-card">
-      <div class="metric-label">퀀트 후보</div>
-      <div class="metric-value" id="candidate-count">-</div>
-      <div class="metric-sub">Candidates</div>
-    </div>
-    <div class="metric-card">
-      <div class="metric-label">마지막 틱</div>
-      <div class="metric-value" id="last-tick" style="font-size:1.1rem">-</div>
-      <div class="metric-sub">Last Tick</div>
+      <div class="metric-label">보유 / 후보</div>
+      <div class="metric-value"><span id="pos-count">0</span> <span style="color:var(--text-tertiary);font-weight:400">/ </span><span id="candidate-count" style="color:var(--accent)">-</span></div>
+      <div class="metric-sub">Positions / Candidates</div>
     </div>
   </div>
 
@@ -301,7 +302,7 @@
           <th class="text-right">승/패</th>
           <th class="text-right">승률</th>
           <th class="text-right">총 손익</th>
-          <th class="text-right">평균 손익</th>
+          <th class="text-right">평균손익률</th>
           <th class="text-right">MDD</th>
         </tr></thead>
         <tbody id="perf-table"><tr><td colspan="7" class="empty-row">데이터 없음</td></tr></tbody>
@@ -314,8 +315,9 @@
     <div class="card-header">
       <span class="card-title">퀀트 설정</span>
     </div>
-    <div class="card-body">
+    <div class="card-body" style="padding:0">
       <div class="config-grid" id="config-grid"></div>
+      <div id="strat-config-sections"></div>
     </div>
   </div>
 
@@ -438,7 +440,7 @@ async function toggleStrat(name){
   try{
     const r=await fetch('/api/strategies/'+name+'/toggle',{method:'POST'});
     const d=await r.json();
-    if(d.success&&_quantStrats[name]){_quantStrats[name].enabled=d.enabled;renderQuantStrats();renderRiskTable();toast((_quantStrats[name].display_name||name)+(d.enabled?' 활성화':' 비활성화'),'success');}
+    if(d.success&&_quantStrats[name]){_quantStrats[name].enabled=d.enabled;renderQuantStrats();renderStratConfigs(_quantStrats);renderRiskTable();toast((_quantStrats[name].display_name||name)+(d.enabled?' 활성화':' 비활성화'),'success');}
   }catch(e){console.error(e);}
 }
 
@@ -462,7 +464,11 @@ function updateStatus(s){
   }
   _posCount=s.position_count;
   document.getElementById('pos-count').textContent=s.position_count;
-  document.getElementById('last-tick').textContent=s.last_tick_at||'--';
+  const inv=s.invested||'0';
+  document.getElementById('invested').textContent=inv==='0'?'-':fmt(inv)+'원';
+  const avail=s.available_balance||'-';
+  document.getElementById('available-balance').textContent=avail==='-'?'-':fmt(avail)+'원';
+  document.getElementById('pending-orders').textContent='미체결: '+(s.pending_order_count||0)+'건';
   const engineEl=document.getElementById('engine-running');
   engineEl.textContent=s.running?'실행 중':'대기';
   engineEl.style.color=s.running?'var(--profit)':'var(--text-secondary)';
@@ -536,14 +542,42 @@ async function loadConfig(){
       ['최대 종목수','max_stocks'],['모멘텀 기간','momentum_days'],
       ['최소 평균거래량','min_avg_volume'],['최소 모멘텀','min_momentum'],
       ['OHLCV 갱신주기','ohlcv_refresh_minutes'],
-    ].map(([l,k])=>`<div class="config-item"><span class="config-label">${l}</span><span class="config-value">${k==='min_avg_volume'?fmt(q[k]||0):(q[k]??'-')}</span></div>`).join('');
+    ].map(([l,k])=>`<div class="config-cell"><span class="cl">${l}</span><span class="cv">${k==='min_avg_volume'?fmt(q[k]||0):(q[k]??'-')}</span></div>`).join('');
     const strats=d.strategies||{};_quantStrats={};
     for(const [name,s] of Object.entries(strats)){
       if(_QUANT_NAMES.has(name))_quantStrats[name]=s;
     }
+    renderStratConfigs(strats);
     renderRiskTable();
     renderQuantStrats();
   }catch(e){console.error(e);}
+}
+
+const _PARAM_LABELS={
+  lookback:'관측 윈도우',volume_multiplier:'거래량 배수',breakout_pct:'돌파 비율',
+  window:'BB 윈도우',num_std:'표준편차 배수',
+  buy_threshold:'매수 임계값',sell_threshold:'매도 임계값',
+  weight_momentum:'모멘텀 가중치',weight_volume:'거래량 가중치',weight_orderbook:'호가 가중치',
+  cooldown_seconds:'쿨다운(초)',stop_loss_ratio:'손절 비율',take_profit_ratio:'익절 비율',
+};
+const _SKIP_KEYS=new Set(['enabled','display_name']);
+const _RATIO_KEYS=new Set(['stop_loss_ratio','take_profit_ratio','breakout_pct']);
+function renderStratConfigs(strats){
+  const el=document.getElementById('strat-config-sections');
+  const active=Object.entries(strats).filter(([,s])=>s.enabled);
+  if(!active.length){el.innerHTML='';return;}
+  el.innerHTML=active.map(([name,s])=>{
+    const label=s.display_name||name;
+    const params=Object.entries(s).filter(([k])=>!_SKIP_KEYS.has(k));
+    const cells=params.map(([k,v])=>{
+      const pl=_PARAM_LABELS[k]||k;
+      let pv;
+      if(typeof v==='number'&&_RATIO_KEYS.has(k)) pv=(v*100).toFixed(1)+'%';
+      else pv=v??'-';
+      return `<div class="config-cell"><span class="cl">${pl}</span><span class="cv">${pv}</span></div>`;
+    }).join('');
+    return `<div style="border-top:1px solid var(--border)"><div style="padding:10px 18px 4px;font-size:0.72rem;color:var(--text-secondary);font-weight:600;letter-spacing:0.3px">${label}</div><div class="config-grid">${cells}</div></div>`;
+  }).join('');
 }
 
 // ── Quant Scan ──
@@ -558,11 +592,8 @@ function _renderScanItems(items){
   _scanSymbols=items.map(s=>s.symbol);
   document.getElementById('candidate-count').textContent=items.length+'개';
   if(!items.length){tb.innerHTML='<tr><td colspan="10" class="empty-row">조건에 맞는 종목 없음</td></tr>';return;}
-  const maxScore=Math.max(...items.map(s=>s.score));
-  const minScore=Math.min(...items.map(s=>s.score));
-  const scoreRange=maxScore-minScore||1;
   tb.innerHTML=items.map((s,i)=>{
-    const pct=((s.score-minScore)/scoreRange)*100;
+    const pct=100/(1+Math.exp(-2.5*s.score));
     return `<tr>
       <td style="color:var(--text-tertiary)">${i+1}</td>
       <td><strong>${s.name||s.symbol}</strong> <span style="color:var(--text-tertiary);font-size:0.7rem">${s.symbol}</span></td>
@@ -601,7 +632,7 @@ async function loadPerf(){
     const d=await fetch('/api/performance').then(r=>r.json());
     const stats=d.data||{};const keys=Object.keys(stats);
     if(!keys.length){tb.innerHTML='<tr><td colspan="7" class="empty-row">데이터 없음</td></tr>';return;}
-    tb.innerHTML=keys.map(k=>{const s=stats[k];const pnl=Number(s.total_pnl);return `<tr><td>${k}</td><td class="text-right">${s.trades}</td><td class="text-right">${s.wins}/${s.losses}</td><td class="text-right">${s.win_rate}%</td><td class="text-right ${pnl>=0?'text-profit':'text-loss'}">${pnlSign(pnl)}원</td><td class="text-right">${fmt(s.avg_pnl)}원</td><td class="text-right text-loss">${fmt(s.max_drawdown)}원</td></tr>`;}).join('');
+    tb.innerHTML=keys.map(k=>{const s=stats[k];const pnl=Number(s.total_pnl);const ap=s.avg_pnl_pct!=null?Number(s.avg_pnl_pct):null;return `<tr><td>${k}</td><td class="text-right">${s.trades}</td><td class="text-right">${s.wins}/${s.losses}</td><td class="text-right">${s.win_rate}%</td><td class="text-right ${pnl>=0?'text-profit':'text-loss'}">${pnlSign(pnl)}원</td><td class="text-right ${ap!==null?(ap>=0?'text-profit':'text-loss'):''}">${ap!==null?(ap>0?'+':'')+ap.toFixed(2)+'%':'-'}</td><td class="text-right text-loss">${fmt(s.max_drawdown)}원</td></tr>`;}).join('');
   }catch(e){tb.innerHTML='<tr><td colspan="7" class="empty-row">오류</td></tr>';}
 }
 

@@ -276,6 +276,16 @@ class KISBroker(BaseBroker):
         value = summary.get("tot_evlu_amt") or summary.get("dnca_tot_amt", "0")
         return Decimal(str(int(value)))
 
+    async def get_available_cash(self) -> Decimal:
+        if not self._connected or self._api is None:
+            return Decimal("0")
+
+        await self._throttle()
+        value = await asyncio.to_thread(
+            self._retry_on_token_expired, self._api.get_kr_buyable_cash
+        )
+        return Decimal(str(value))
+
     async def get_trade_history(self) -> list[dict[str, Any]]:
         if not self._connected or self._api is None:
             return []

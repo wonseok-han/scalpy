@@ -5,7 +5,7 @@ import structlog
 from sqlalchemy import create_engine, func, inspect, select, text
 from sqlalchemy.orm import Session
 
-from scalpy.data.schema import Base, PositionRow, StrategyTradeLog, TradeRow
+from scalpy.data.schema import Base, PositionRow, TradeRow
 
 logger = structlog.get_logger()
 
@@ -31,6 +31,12 @@ class TradeRepository:
             with self._engine.begin() as conn:
                 conn.execute(text("ALTER TABLE trades ADD COLUMN mock BOOLEAN DEFAULT true"))
             logger.info("migration.added_mock_column")
+        if "strategy" not in columns:
+            with self._engine.begin() as conn:
+                conn.execute(text("ALTER TABLE trades ADD COLUMN strategy VARCHAR(50) DEFAULT ''"))
+                conn.execute(text("UPDATE trades SET strategy = 'factor' WHERE strategy = '' OR strategy IS NULL"))
+                conn.execute(text("UPDATE positions SET strategy = 'factor' WHERE strategy = 'synced' OR strategy = ''"))
+            logger.info("migration.added_strategy_column")
 
     def recreate_trades_table(self) -> None:
         TradeRow.__table__.drop(self._engine, checkfirst=True)
@@ -56,6 +62,21 @@ class TradeRepository:
             for r in rows:
                 existing[(r.order_no, r.order_date)] = r.tot_ccld_qty
 
+            strat_map: dict[str, str] = {}
+            pos_rows = session.scalars(
+                select(PositionRow).where(PositionRow.closed_at.is_(None))
+            ).all()
+            for pr in pos_rows:
+                strat_map[pr.symbol] = pr.strategy
+            closed_pos = session.execute(
+                select(PositionRow.symbol, PositionRow.strategy)
+                .where(PositionRow.closed_at.isnot(None))
+                .order_by(PositionRow.closed_at.desc())
+            ).all()
+            for cp in closed_pos:
+                if cp.symbol not in strat_map:
+                    strat_map[cp.symbol] = cp.strategy
+
             for t in trades:
                 order_no = t.get("order_no", "")
                 order_date = t.get("order_date", "") or today
@@ -71,10 +92,11 @@ class TradeRepository:
                 fee = self._calc_fee(t)
 
                 if prev_qty is None:
+                    symbol = t.get("symbol", "")
                     row = TradeRow(
                         order_no=order_no,
                         order_date=order_date,
-                        symbol=t.get("symbol", ""),
+                        symbol=symbol,
                         name=t.get("name", ""),
                         side=t.get("side", ""),
                         ord_qty=t.get("ord_qty", 0),
@@ -87,6 +109,7 @@ class TradeRepository:
                         orgn_order_no=t.get("orgn_order_no", ""),
                         ord_dvsn_cd=t.get("ord_dvsn_cd", ""),
                         cncl_yn=t.get("cncl_yn", ""),
+                        strategy=strat_map.get(symbol, ""),
                         fee=fee,
                         mock=self._mock,
                     )
@@ -286,24 +309,105 @@ class TradeRepository:
             )
             return int(result or 0)
 
-    def record_strategy_trade(self, strategy: str, symbol: str, pnl: float) -> None:
-        with Session(self._engine) as session:
-            session.add(StrategyTradeLog(
-                strategy=strategy, symbol=symbol, pnl=pnl, mock=self._mock,
-            ))
-            session.commit()
 
-    def get_strategy_trades(self) -> list[dict]:
+    def get_strategy_performance(self) -> dict[str, dict]:
+        """trades 테이블에서 전략별 라운드트립(매수→매도) 기반 성과 집계."""
         with Session(self._engine) as session:
-            rows = session.scalars(
-                select(StrategyTradeLog)
-                .where(StrategyTradeLog.mock == self._mock)
-                .order_by(StrategyTradeLog.closed_at)
-            ).all()
-            return [
-                {"strategy": r.strategy, "symbol": r.symbol, "pnl": float(r.pnl)}
-                for r in rows
-            ]
+            symbols = [r[0] for r in session.execute(
+                select(TradeRow.symbol).where(
+                    TradeRow.side == "sell",
+                    TradeRow.mock == self._mock,
+                    TradeRow.strategy != "",
+                ).group_by(TradeRow.symbol)
+            ).all()]
+
+            stats: dict[str, dict] = {}
+            for symbol in symbols:
+                buys = session.scalars(
+                    select(TradeRow).where(
+                        TradeRow.symbol == symbol,
+                        TradeRow.side == "buy",
+                        TradeRow.mock == self._mock,
+                    ).order_by(TradeRow.order_date, TradeRow.ord_time)
+                ).all()
+                sells = session.scalars(
+                    select(TradeRow).where(
+                        TradeRow.symbol == symbol,
+                        TradeRow.side == "sell",
+                        TradeRow.mock == self._mock,
+                    ).order_by(TradeRow.order_date, TradeRow.ord_time)
+                ).all()
+
+                buy_queue: list[tuple[int, float, str, str]] = []
+                for b in buys:
+                    if b.tot_ccld_qty > 0 and b.avg_price > 0:
+                        buy_queue.append((b.tot_ccld_qty, float(b.avg_price), b.order_date, b.strategy))
+
+                qi = 0
+                remaining = buy_queue[0][0] if buy_queue else 0
+
+                for sell in sells:
+                    if sell.avg_price == 0 or sell.tot_ccld_qty == 0:
+                        continue
+                    strat = sell.strategy or (buy_queue[qi][3] if qi < len(buy_queue) else "")
+                    if not strat:
+                        continue
+
+                    to_match = sell.tot_ccld_qty
+                    total_buy_cost = 0.0
+                    buy_date = buy_queue[qi][2] if qi < len(buy_queue) else sell.order_date
+
+                    while to_match > 0 and qi < len(buy_queue):
+                        take = min(to_match, remaining)
+                        total_buy_cost += take * buy_queue[qi][1]
+                        buy_date = buy_queue[qi][2]
+                        to_match -= take
+                        remaining -= take
+                        if remaining <= 0:
+                            qi += 1
+                            remaining = buy_queue[qi][0] if qi < len(buy_queue) else 0
+
+                    if to_match > 0:
+                        continue
+
+                    matched_qty = sell.tot_ccld_qty
+                    buy_avg = total_buy_cost / matched_qty
+                    buy_fee = int(total_buy_cost * float(_COMMISSION_RATE))
+                    pnl = int((sell.avg_price - buy_avg) * matched_qty - sell.fee - buy_fee)
+                    pnl_pct = round((sell.avg_price - buy_avg) / buy_avg * 100, 2) if buy_avg > 0 else 0.0
+                    cross_day = buy_date != sell.order_date
+
+                    s = stats.setdefault(strat, {
+                        "trades": 0, "wins": 0, "losses": 0,
+                        "total_pnl": 0, "max_drawdown": 0, "_peak": 0,
+                        "intraday_trades": 0, "cross_day_trades": 0,
+                        "avg_pnl_pct": 0.0, "_pnl_pcts": [],
+                    })
+                    s["trades"] += 1
+                    s["total_pnl"] += pnl
+                    s["_pnl_pcts"].append(pnl_pct)
+                    if pnl > 0:
+                        s["wins"] += 1
+                    elif pnl < 0:
+                        s["losses"] += 1
+                    if cross_day:
+                        s["cross_day_trades"] += 1
+                    else:
+                        s["intraday_trades"] += 1
+                    if s["total_pnl"] > s["_peak"]:
+                        s["_peak"] = s["total_pnl"]
+                    dd = s["_peak"] - s["total_pnl"]
+                    if dd > s["max_drawdown"]:
+                        s["max_drawdown"] = dd
+
+            for s in stats.values():
+                s["win_rate"] = round(s["wins"] / s["trades"] * 100, 1) if s["trades"] > 0 else 0.0
+                pcts = s.pop("_pnl_pcts")
+                s["avg_pnl_pct"] = round(sum(pcts) / len(pcts), 2) if pcts else 0.0
+                s["total_pnl"] = str(s["total_pnl"])
+                s["max_drawdown"] = str(s["max_drawdown"])
+                del s["_peak"]
+            return stats
 
     def save_position_open(
         self, symbol: str, strategy: str, opened_at: "datetime | None" = None,
@@ -345,6 +449,39 @@ class TradeRepository:
             ).all()
             return {r.symbol: r.opened_at for r in rows}
 
+    def get_position_strategies(self) -> dict[str, str]:
+        """보유 종목별 전략명 조회. positions 테이블 우선, 없으면 trades 최근 매수 건."""
+        with Session(self._engine) as session:
+            result: dict[str, str] = {}
+            pos_rows = session.scalars(
+                select(PositionRow).where(PositionRow.closed_at.is_(None))
+            ).all()
+            for r in pos_rows:
+                if r.strategy:
+                    result[r.symbol] = r.strategy
+
+            missing = session.scalars(
+                select(TradeRow.symbol).where(
+                    TradeRow.side == "buy",
+                    TradeRow.strategy != "",
+                    TradeRow.mock == self._mock,
+                ).group_by(TradeRow.symbol)
+            ).all()
+            for symbol in missing:
+                if symbol in result:
+                    continue
+                row = session.scalar(
+                    select(TradeRow.strategy).where(
+                        TradeRow.symbol == symbol,
+                        TradeRow.side == "buy",
+                        TradeRow.strategy != "",
+                        TradeRow.mock == self._mock,
+                    ).order_by(TradeRow.ord_time.desc()).limit(1)
+                )
+                if row:
+                    result[symbol] = row
+            return result
+
     def get_trades_today(self, day: date | None = None) -> list[dict]:
         day_str = (day or date.today()).strftime("%Y%m%d")
         with Session(self._engine) as session:
@@ -361,6 +498,7 @@ class TradeRepository:
                     "symbol": r.symbol,
                     "name": r.name,
                     "side": r.side,
+                    "strategy": r.strategy or "",
                     "price": str(r.avg_price),
                     "quantity": r.tot_ccld_qty,
                     "ord_qty": r.ord_qty,

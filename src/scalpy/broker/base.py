@@ -39,6 +39,10 @@ class BaseBroker(ABC):
     @abstractmethod
     async def get_balance(self) -> Decimal: ...
 
+    async def get_available_cash(self) -> Decimal:
+        """주문가능금액 (예수금). 기본 구현은 get_balance 위임."""
+        return await self.get_balance()
+
     @abstractmethod
     async def get_trade_history(self) -> list[dict[str, Any]]:
         """당일 체결내역 조회."""

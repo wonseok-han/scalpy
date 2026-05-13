@@ -197,11 +197,28 @@ def _build_sse_state() -> dict[str, Any]:
         except Exception:
             pass
 
+    invested = 0
+    available_balance = "-"
+    pending_order_count = 0
+    if _engine_ref is not None:
+        for p in _engine_ref.positions.all():
+            invested += int(p.avg_price * p.quantity)
+        try:
+            cash = _engine_ref._cached_available_cash
+            if cash is not None:
+                available_balance = str(int(cash - _engine_ref._pending_buy_cost))
+        except Exception:
+            pass
+        pending_order_count = len(_engine_ref.orders.get_pending())
+
     return {
         "status": {
             "running": _engine_ref._running if _engine_ref else False,
             "balance": _state.last_api_balance if _state else "-",
             "prev_balance": _state.last_prev_balance if _state else "",
+            "invested": str(invested),
+            "available_balance": available_balance,
+            "pending_order_count": pending_order_count,
             "daily_pnl": daily_pnl,
             "total_fees": total_fees,
             "trade_count": trade_count,
@@ -476,8 +493,10 @@ async def _quant_start() -> list[str]:
     if not universe:
         broker = _engine_ref._broker if _engine_ref else None
         if broker:
+            from scalpy.screening.quant_screener import get_warn_symbols
             top = await broker.get_top_volume_stocks(30)
-            top = [s for s in top if not _is_etf(s.get("symbol", ""), s.get("name", ""))]
+            warned = get_warn_symbols()
+            top = [s for s in top if not _is_etf(s.get("symbol", ""), s.get("name", "")) and s.get("symbol", "") not in warned]
             universe = [s["symbol"] for s in top]
             names = {s["symbol"]: s.get("name", "") for s in top}
     if not universe:
@@ -797,24 +816,31 @@ async def quant_scan(refresh: bool = False) -> dict[str, Any]:
 async def performance() -> dict[str, Any]:
     if not _engine_ref:
         return {"data": {}}
+    if _trade_repo_ref:
+        try:
+            return {"data": _trade_repo_ref.get_strategy_performance()}
+        except Exception:
+            pass
     return {"data": _engine_ref._performance.all_stats()}
 
 
 @router.get("/quant/config")
 async def quant_config() -> dict[str, Any]:
     quant = settings.get("quant", {})
+    strat_configs = settings.get("strategies", {})
+    strats = {}
+    for s in (_registry_ref.all() if _registry_ref else []):
+        if s.name not in _QUANT_STRATEGIES:
+            continue
+        params = dict(strat_configs.get(s.name, {}))
+        params["enabled"] = s.enabled
+        params["display_name"] = s.display_name
+        params["stop_loss_ratio"] = s.stop_loss_ratio
+        params["take_profit_ratio"] = s.take_profit_ratio
+        strats[s.name] = params
     return {
         "quant": dict(quant),
-        "strategies": {
-            s.name: {
-                "enabled": s.enabled,
-                "display_name": s.display_name,
-                "stop_loss_ratio": s.stop_loss_ratio,
-                "take_profit_ratio": s.take_profit_ratio,
-            }
-            for s in (_registry_ref.all() if _registry_ref else [])
-            if s.name in _QUANT_STRATEGIES
-        },
+        "strategies": strats,
     }
 
 
