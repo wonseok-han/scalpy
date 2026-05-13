@@ -57,11 +57,6 @@
 .status-chip .s-label { font-size: 0.7rem; color: var(--text-tertiary); font-weight: 500; }
 .status-chip .s-value { font-size: 0.85rem; font-weight: 600; margin-left: auto; }
 
-/* ── Mode tag ── */
-.mode-tag { display: inline-block; padding: 3px 10px; border-radius: 12px; font-size: 0.72rem; font-weight: 600; }
-.mode-scalping { background: var(--blue-soft); color: var(--blue); }
-.mode-quant { background: var(--accent-soft); color: var(--accent); }
-.mode-both { background: rgba(249,115,22,0.12); color: #F97316; }
 
 /* ── Quant-specific ── */
 .config-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; }
@@ -187,8 +182,8 @@
       <span class="s-value" id="engine-running">대기</span>
     </div>
     <div class="status-chip">
-      <span class="s-label">모드</span>
-      <span class="s-value"><span id="mode-tag" class="mode-tag">-</span></span>
+      <span class="s-label">투자</span>
+      <span class="s-value" id="mode-tag">-</span>
     </div>
     <div class="status-chip">
       <span class="s-label">퀀트 전략</span>
@@ -443,7 +438,7 @@ function renderRiskTable(){
 }
 async function toggleStrat(name){
   try{
-    const r=await fetch('/api/strategies/'+name+'/toggle',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode:'quant'})});
+    const r=await fetch('/api/strategies/'+name+'/toggle',{method:'POST'});
     const d=await r.json();
     if(d.success&&_quantStrats[name]){_quantStrats[name].enabled=d.enabled;renderQuantStrats();renderRiskTable();toast((_quantStrats[name].display_name||name)+(d.enabled?' 활성화':' 비활성화'),'success');}
   }catch(e){console.error(e);}
@@ -477,6 +472,7 @@ function updateStatus(s){
   statusEl.innerHTML=s.running?'<span class="pulse-dot on"></span> 퀀트 실행 중':'<span class="pulse-dot off"></span> 대기';
   document.getElementById('btn-start').disabled=s.running;
   document.getElementById('btn-stop').disabled=!s.running;
+  if('mock' in s) document.getElementById('mode-tag').textContent=s.mock?'모의투자':'실거래';
 }
 
 // ── Positions ──
@@ -537,8 +533,6 @@ function tradePageLast(){const m=Math.ceil(_allTrades.length/_tradePageSize)-1;i
 async function loadConfig(){
   try{
     const r=await fetch('/api/quant/config');const d=await r.json();
-    const tag=document.getElementById('mode-tag');
-    tag.textContent=d.mode;tag.className='mode-tag mode-'+d.mode;
     const q=d.quant||{};
     document.getElementById('config-grid').innerHTML=[
       ['최대 종목수','max_stocks'],['모멘텀 기간','momentum_days'],
@@ -626,7 +620,7 @@ async function fetchOhlcv(){
 async function startQuant(){
   const btn=document.getElementById('btn-start');btn.classList.add('loading');btn.textContent='시작 중...';
   try{
-    const d=await fetch('/api/actions/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode:'quant'})}).then(r=>r.json());
+    const d=await fetch('/api/actions/start',{method:'POST'}).then(r=>r.json());
     if(d.success){
       toast('퀀트 트레이딩 시작 ('+d.symbols.length+'개 종목)','success');
       if(d.scan&&d.scan.length){_renderScanItems(d.scan);try{sessionStorage.setItem('quant_scan',JSON.stringify(d.scan))}catch{}}

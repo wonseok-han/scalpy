@@ -16,6 +16,7 @@ def scan_market_universe(
     max_change_rate: float = 15.0,
     min_amount: int = 0,
     top_n: int = 100,
+    max_price: int = 0,
 ) -> list[dict[str, Any]]:
     """FinanceDataReader로 전체 KRX 종목 중 기본 조건 통과 종목 반환."""
     import FinanceDataReader as fdr
@@ -31,6 +32,8 @@ def scan_market_universe(
         df = df[df["Amount"] >= min_amount]
     # 우선주 제외 (코드 끝자리 0이 아닌 것)
     df = df[df["Code"].str[-1] == "0"]
+    if max_price > 0:
+        df = df[df["Close"] <= max_price]
 
     df = df.sort_values("Amount", ascending=False).head(top_n)
 

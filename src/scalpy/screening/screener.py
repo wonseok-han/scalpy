@@ -55,7 +55,7 @@ class StockScreener:
         self._min_volume = min_volume
         self.symbol_names: dict[str, str] = {}
 
-    async def scan(self, held_symbols: list[str] | None = None) -> list[str]:
+    async def scan(self, held_symbols: list[str] | None = None, max_price: int = 0) -> list[str]:
         held = set(held_symbols or [])
 
         try:
@@ -72,7 +72,7 @@ class StockScreener:
             if s.get("name"):
                 self.symbol_names[s["symbol"]] = s["name"]
 
-        filtered = self._filter(stocks)
+        filtered = self._filter(stocks, max_price=max_price)
         if not filtered:
             logger.warning("screener.no_stocks_after_filter")
             return list(held)
@@ -91,7 +91,7 @@ class StockScreener:
         )
         return result
 
-    def _filter(self, stocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def _filter(self, stocks: list[dict[str, Any]], max_price: int = 0) -> list[dict[str, Any]]:
         result = []
         for s in stocks:
             code = s.get("symbol", "")
@@ -110,6 +110,8 @@ class StockScreener:
             if cr > self._max_change_rate:
                 continue
             if abs(cr) < self._min_change_rate:
+                continue
+            if max_price > 0 and s.get("price", 0) > max_price:
                 continue
             result.append(s)
         return result

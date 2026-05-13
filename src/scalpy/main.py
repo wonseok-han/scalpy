@@ -124,7 +124,13 @@ async def _screening_loop(
     while not stop_event.is_set():
         try:
             held = [p.symbol for p in engine.positions.all()]
-            new_symbols = await screener.scan(held_symbols=held)
+            loop_max_price = 0
+            try:
+                bal = await engine._broker.get_balance()
+                loop_max_price = int(bal)
+            except Exception:
+                pass
+            new_symbols = await screener.scan(held_symbols=held, max_price=loop_max_price)
             if new_symbols:
                 await stream.update_subscriptions(new_symbols)
                 await engine.update_symbols(new_symbols)
@@ -142,26 +148,15 @@ _SCALPING_STRATEGIES = {"ma_cross", "bollinger", "rsi", "orderbook", "vwap"}
 _QUANT_STRATEGIES = {"momentum", "mean_reversion", "factor"}
 
 
-def _apply_mode(registry: StrategyRegistry, mode: str) -> None:
-    scalping_on = set(settings.get("strategies.scalping_enabled", ["ma_cross"]))
-    quant_on = set(settings.get("strategies.quant_enabled", ["momentum"]))
+def _apply_strategies(registry: StrategyRegistry) -> None:
+    scalping_on = set(settings.get("strategies.scalping_enabled", []))
+    quant_on = set(settings.get("strategies.quant_enabled", []))
     for s in registry.all():
-        if mode == "scalping":
-            if s.name in _QUANT_STRATEGIES:
-                s.enabled = False
-            else:
-                s.enabled = s.name in scalping_on
-        elif mode == "quant":
-            if s.name in _SCALPING_STRATEGIES:
-                s.enabled = False
-            else:
-                s.enabled = s.name in quant_on
-        else:
-            if s.name in _SCALPING_STRATEGIES:
-                s.enabled = s.name in scalping_on
-            elif s.name in _QUANT_STRATEGIES:
-                s.enabled = s.name in quant_on
-    logger.info("scalpy.mode_applied", mode=mode, enabled=[s.name for s in registry.enabled()])
+        if s.name in _SCALPING_STRATEGIES:
+            s.enabled = s.name in scalping_on
+        elif s.name in _QUANT_STRATEGIES:
+            s.enabled = s.name in quant_on
+    logger.info("scalpy.strategies_applied", enabled=[s.name for s in registry.enabled()])
 
 
 def _prefill_from_ohlcv(engine: TradingEngine, symbols: list[str]) -> None:
@@ -194,20 +189,20 @@ async def _start_trading(
     if bus:
         await bus.emit("engine.started")
 
-    trading_cfg = settings.get("trading", {})
-    mode = trading_cfg.get("mode", "scalping")
-    _apply_mode(engine._registry, mode)
+    _apply_strategies(engine._registry)
+    scalping_on = settings.get("strategies.scalping_enabled", [])
+    quant_on = settings.get("strategies.quant_enabled", [])
 
     screening_cfg = settings.get("screening", {})
     screening_enabled = screening_cfg.get("enabled", False)
 
     symbols: list[str] = []
 
-    if mode in ("quant", "both"):
+    if quant_on:
         quant_symbols = await _quant_scan(engine, stream, stop_event)
         symbols.extend(quant_symbols)
 
-    if mode in ("scalping", "both") and screening_enabled:
+    if scalping_on and screening_enabled:
         from scalpy.screening import StockScreener
 
         screener = StockScreener(
@@ -219,7 +214,13 @@ async def _start_trading(
             min_volume=screening_cfg.get("min_volume", 100_000),
         )
         held = [p.symbol for p in engine.positions.all()]
-        scalp_symbols = await screener.scan(held_symbols=held)
+        scalp_max_price = 0
+        try:
+            bal = await broker.get_balance()
+            scalp_max_price = int(bal)
+        except Exception:
+            pass
+        scalp_symbols = await screener.scan(held_symbols=held, max_price=scalp_max_price)
         symbols.extend(s for s in scalp_symbols if s not in symbols)
 
         interval = screening_cfg.get("interval_minutes", 30)
@@ -233,7 +234,7 @@ async def _start_trading(
 
     await stream.start(symbols)
     _prefill_from_ohlcv(engine, symbols)
-    logger.info("scalpy.trading_started", mode=mode, symbols=symbols)
+    logger.info("scalpy.trading_started", symbols=symbols)
 
 
 async def _quant_scan(
@@ -252,6 +253,13 @@ async def _quant_scan(
     ohlcv_repo = OhlcvRepository(db_url)
     ohlcv_repo.create_tables()
 
+    max_price = 0
+    try:
+        bal = await engine._broker.get_balance()
+        max_price = int(bal)
+    except Exception:
+        pass
+
     universe = quant_cfg.get("universe", [])
     if not universe:
         try:
@@ -260,7 +268,7 @@ async def _quant_scan(
             max_cr = quant_cfg.get("max_change_rate", 15.0)
             min_vol = quant_cfg.get("min_avg_volume", 500_000)
             top_n = quant_cfg.get("universe_size", 100)
-            stocks = scan_market_universe(min_vol, min_cr, max_cr, 0, top_n)
+            stocks = scan_market_universe(min_vol, min_cr, max_cr, 0, top_n, max_price)
             universe = [s["symbol"] for s in stocks]
             logger.info("quant.market_universe", candidates=len(universe))
         except Exception as e:
@@ -326,6 +334,14 @@ async def _quant_rescan_loop(
             pass
         try:
             quant_cfg = settings.get("quant", {})
+
+            max_price = 0
+            try:
+                bal = await engine._broker.get_balance()
+                max_price = int(bal)
+            except Exception:
+                pass
+
             universe = list(quant_cfg.get("universe", []))
             if not universe:
                 try:
@@ -336,6 +352,7 @@ async def _quant_rescan_loop(
                         quant_cfg.get("max_change_rate", 15.0),
                         0,
                         quant_cfg.get("universe_size", 100),
+                        max_price,
                     )
                     universe = [s["symbol"] for s in stocks]
                 except Exception:

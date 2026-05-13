@@ -432,7 +432,7 @@ tbody tr:last-child td { border-bottom: none; }
       <span class="s-value" id="strategy-count">0개</span>
     </div>
     <div class="status-chip">
-      <span class="s-label">모드</span>
+      <span class="s-label">투자</span>
       <span class="s-value" id="mode-chip">-</span>
     </div>
   </div>
@@ -696,7 +696,7 @@ function stratLabel(key){if(!key)return'-';return _strats[key]||_systemLabels[ke
 
 async function toggleStrategy(name){
   try{
-    const r=await fetch('/api/strategies/'+name+'/toggle',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode:'scalping'})});
+    const r=await fetch('/api/strategies/'+name+'/toggle',{method:'POST'});
     const d=await r.json();
     if(d.success){
       _stratEnabled[name]=d.enabled;
@@ -998,7 +998,6 @@ async function action(name,silent){
   if(btn){orig=btn.textContent;btn.classList.add('loading');btn.textContent='처리 중';}
   try{
     const opts={method:'POST'};
-    if(name==='start'){opts.headers={'Content-Type':'application/json'};opts.body=JSON.stringify({mode:'scalping'});}
     const r=await fetch('/api/actions/'+name,opts);
     const text=await r.text();
     let d;

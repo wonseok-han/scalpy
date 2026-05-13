@@ -4,8 +4,6 @@ from typing import Any
 import structlog
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
-
 from scalpy.config import settings
 from scalpy.dashboard.sse import SSEManager
 from scalpy.dashboard.state import DashboardState
@@ -390,34 +388,23 @@ _SCALPING_STRATEGIES = {"ma_cross", "bollinger", "rsi", "orderbook", "vwap"}
 _QUANT_STRATEGIES = {"momentum", "mean_reversion", "factor"}
 
 
-def _apply_mode(mode: str) -> None:
+def _apply_strategies() -> None:
     if not _registry_ref:
         return
-    scalping_on = set(settings.get("strategies.scalping_enabled", ["ma_cross"]))
-    quant_on = set(settings.get("strategies.quant_enabled", ["momentum"]))
+    scalping_on = set(settings.get("strategies.scalping_enabled", []))
+    quant_on = set(settings.get("strategies.quant_enabled", []))
     for s in _registry_ref.all():
-        if mode == "scalping":
-            if s.name in _QUANT_STRATEGIES:
-                s.enabled = False
-            elif s.name in _SCALPING_STRATEGIES:
-                s.enabled = s.name in scalping_on
-        elif mode == "quant":
-            if s.name in _SCALPING_STRATEGIES:
-                s.enabled = False
-            elif s.name in _QUANT_STRATEGIES:
-                s.enabled = s.name in quant_on
-        else:
-            if s.name in _SCALPING_STRATEGIES:
-                s.enabled = s.name in scalping_on
-            elif s.name in _QUANT_STRATEGIES:
-                s.enabled = s.name in quant_on
-    logger.info("dashboard.mode_applied", mode=mode, enabled=[s.name for s in _registry_ref.enabled()])
+        if s.name in _SCALPING_STRATEGIES:
+            s.enabled = s.name in scalping_on
+        elif s.name in _QUANT_STRATEGIES:
+            s.enabled = s.name in quant_on
+    logger.info("dashboard.strategies_applied", enabled=[s.name for s in _registry_ref.enabled()])
 
 
 _last_quant_scan: list[dict] = []
 
 
-async def _build_universe(quant_cfg: dict) -> tuple[list[str], dict[str, str]]:
+async def _build_universe(quant_cfg: dict, max_price: int = 0) -> tuple[list[str], dict[str, str]]:
     """전체 시장에서 1차 필터링된 universe와 종목명 맵 반환."""
     from scalpy.screening.quant_screener import scan_market_universe
 
@@ -427,7 +414,7 @@ async def _build_universe(quant_cfg: dict) -> tuple[list[str], dict[str, str]]:
     top_n = quant_cfg.get("universe_size", 100)
     try:
         stocks = await asyncio.to_thread(
-            scan_market_universe, min_vol, min_cr, max_cr, 0, top_n
+            scan_market_universe, min_vol, min_cr, max_cr, 0, top_n, max_price
         )
         symbols = [s["symbol"] for s in stocks]
         names = {s["symbol"]: s["name"] for s in stocks}
@@ -450,10 +437,18 @@ async def _quant_start() -> list[str]:
 
     quant_cfg = settings.get("quant", {})
 
+    max_price = 0
+    if _engine_ref:
+        try:
+            bal = await _engine_ref._broker.get_balance()
+            max_price = int(bal)
+        except Exception:
+            pass
+
     universe = list(quant_cfg.get("universe", []))
     names: dict[str, str] = {}
     if not universe:
-        universe, names = await _build_universe(quant_cfg)
+        universe, names = await _build_universe(quant_cfg, max_price=max_price)
     if not universe:
         broker = _engine_ref._broker if _engine_ref else None
         if broker:
@@ -516,10 +511,19 @@ async def _quant_rescan_loop(
             break
         try:
             quant_cfg = settings.get("quant", {})
+
+            max_price = 0
+            if _engine_ref:
+                try:
+                    bal = await _engine_ref._broker.get_balance()
+                    max_price = int(bal)
+                except Exception:
+                    pass
+
             universe = list(quant_cfg.get("universe", []))
             names: dict[str, str] = {}
             if not universe:
-                universe, names = await _build_universe(quant_cfg)
+                universe, names = await _build_universe(quant_cfg, max_price=max_price)
             if not universe and _engine_ref:
                 universe = list(_engine_ref._active_symbols)
             if not universe:
@@ -564,12 +568,8 @@ async def _quant_rescan_loop(
             logger.warning("quant_rescan.failed", error=str(e))
 
 
-class StartRequest(BaseModel):
-    mode: str | None = None
-
-
 @router.post("/actions/start")
-async def start_engine(req: StartRequest | None = None) -> dict[str, Any]:
+async def start_engine() -> dict[str, Any]:
     global _trading_started
     if _engine_ref is None:
         return {"success": False, "error": "engine not available"}
@@ -587,19 +587,25 @@ async def start_engine(req: StartRequest | None = None) -> dict[str, Any]:
         _engine_ref._running = True
         _engine_ref.start_background_loops()
 
-        trading_cfg = settings.get("trading", {})
-        mode = (req and req.mode) or trading_cfg.get("mode", "scalping")
-        _apply_mode(mode)
+        _apply_strategies()
+        scalping_on = settings.get("strategies.scalping_enabled", [])
+        quant_on = settings.get("strategies.quant_enabled", [])
 
         symbols: list[str] = []
 
-        if mode in ("quant", "both"):
+        if quant_on:
             quant_symbols = await _quant_start()
             symbols.extend(quant_symbols)
 
-        if mode in ("scalping", "both") and _screener_ref:
+        if scalping_on and _screener_ref:
             held = [p.symbol for p in _engine_ref.positions.all()]
-            scanned = await _screener_ref.scan(held_symbols=held)
+            scalp_max_price = 0
+            try:
+                bal = await _engine_ref._broker.get_balance()
+                scalp_max_price = int(bal)
+            except Exception:
+                pass
+            scanned = await _screener_ref.scan(held_symbols=held, max_price=scalp_max_price)
             if scanned:
                 symbols.extend(s for s in scanned if s not in symbols)
             if _bus:
@@ -619,8 +625,8 @@ async def start_engine(req: StartRequest | None = None) -> dict[str, Any]:
             await _bus.emit("engine.started")
 
         _trading_started = True
-        logger.info("dashboard.engine_started", mode=mode, symbols=symbols)
-        resp: dict[str, Any] = {"success": True, "mode": mode, "symbols": symbols}
+        logger.info("dashboard.engine_started", symbols=symbols)
+        resp: dict[str, Any] = {"success": True, "symbols": symbols}
         if _last_quant_scan:
             resp["scan"] = _last_quant_scan
         return resp
@@ -659,7 +665,14 @@ async def rescan() -> dict[str, Any]:
         return {"success": False, "error": "screener not available"}
     try:
         held = [p.symbol for p in _engine_ref.positions.all()] if _engine_ref else []
-        symbols = await _screener_ref.scan(held_symbols=held)
+        rescan_max_price = 0
+        if _engine_ref:
+            try:
+                bal = await _engine_ref._broker.get_balance()
+                rescan_max_price = int(bal)
+            except Exception:
+                pass
+        symbols = await _screener_ref.scan(held_symbols=held, max_price=rescan_max_price)
         if _stream_ref and symbols:
             sub_symbols = list(set(symbols) | set(held))
             await _stream_ref.update_subscriptions(sub_symbols)
@@ -673,15 +686,9 @@ async def rescan() -> dict[str, Any]:
 
 
 @router.post("/strategies/{name}/toggle")
-async def toggle_strategy(name: str, body: dict[str, Any] | None = None) -> dict[str, Any]:
+async def toggle_strategy(name: str) -> dict[str, Any]:
     if _registry_ref is None:
         return {"success": False, "error": "registry not available"}
-
-    mode = (body or {}).get("mode", "")
-    if mode == "scalping" and name not in _SCALPING_STRATEGIES:
-        return {"success": False, "error": "not a scalping strategy"}
-    if mode == "quant" and name not in _QUANT_STRATEGIES:
-        return {"success": False, "error": "not a quant strategy"}
 
     result = _registry_ref.toggle(name)
     if result is None:
@@ -748,10 +755,18 @@ async def quant_scan(refresh: bool = False) -> dict[str, Any]:
     quant_cfg = settings.get("quant", {})
     ohlcv_repo = OhlcvRepository(db_url)
 
+    scan_max_price = 0
+    if _engine_ref:
+        try:
+            bal = await _engine_ref._broker.get_balance()
+            scan_max_price = int(bal)
+        except Exception:
+            pass
+
     universe = list(quant_cfg.get("universe", []))
     names: dict[str, str] = {}
     if not universe:
-        universe, names = await _build_universe(quant_cfg)
+        universe, names = await _build_universe(quant_cfg, max_price=scan_max_price)
     if not universe and _engine_ref:
         universe = list(_engine_ref._active_symbols)
     if not universe:
@@ -790,10 +805,8 @@ async def performance() -> dict[str, Any]:
 
 @router.get("/quant/config")
 async def quant_config() -> dict[str, Any]:
-    trading = settings.get("trading", {})
     quant = settings.get("quant", {})
     return {
-        "mode": trading.get("mode", "scalping"),
         "quant": dict(quant),
         "strategies": {
             s.name: {
@@ -922,7 +935,7 @@ async def persist_settings() -> dict[str, Any]:
 
     # trading
     trading = d.setdefault("trading", {})
-    for k in ("mode", "auto_start", "symbols", "max_position_size",
+    for k in ("auto_start", "symbols", "max_position_size",
               "max_position_ratio", "max_open_positions",
               "stop_loss_ratio", "take_profit_ratio"):
         v = settings.get(f"trading.{k}")

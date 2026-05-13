@@ -23,8 +23,6 @@ interval = 0.5
 volatility = 0.01
 
 [default.trading]
-# 트레이딩 모드: "scalping" | "quant" | "both"
-mode = "both"
 # 서버 시작 시 자동으로 트레이딩 시작 (false: 대시보드에서 수동 시작)
 auto_start = false
 # 자동매매 대상 종목코드 목록 (최대 20종목, WebSocket 구독 제한)
