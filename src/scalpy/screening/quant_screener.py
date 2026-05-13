@@ -1,4 +1,8 @@
 import math
+import ssl
+import tempfile
+import urllib.request
+import zipfile
 from typing import Any
 
 import structlog
@@ -8,6 +12,57 @@ from scalpy.data.ohlcv import OhlcvRepository
 logger = structlog.get_logger()
 
 _WARN_KEYWORDS = ("SPAC", "관리종목", "투자주의", "투자경고", "투자위험", "거래정지")
+
+_warn_symbols: set[str] = set()
+
+_KOSPI_MST_URL = "https://new.real.download.dws.co.kr/common/master/kospi_code.mst.zip"
+_KOSDAQ_MST_URL = "https://new.real.download.dws.co.kr/common/master/kosdaq_code.mst.zip"
+
+# 종목마스터 시장경고 코드: 00=해당없음, 01=투자주의, 02=투자경고, 03=투자위험
+_MST_WARN_CODES = {"01", "02", "03"}
+
+
+def get_warn_symbols() -> set[str]:
+    return _warn_symbols
+
+
+def load_warn_symbols_from_master() -> set[str]:
+    """KIS 종목마스터 파일에서 투자주의/경고/위험/관리종목/거래정지 종목을 일괄 추출."""
+    warned: set[str] = set()
+    ssl._create_default_https_context = ssl._create_unverified_context
+
+    for url, tail_len, mng_offset, warn_offset, stop_offset in [
+        (_KOSPI_MST_URL, 228, 63, 64, 61),
+        (_KOSDAQ_MST_URL, 222, 58, 59, 56),
+    ]:
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                zip_path = f"{tmpdir}/code.zip"
+                urllib.request.urlretrieve(url, zip_path)
+                with zipfile.ZipFile(zip_path) as zf:
+                    mst_name = zf.namelist()[0]
+                    zf.extract(mst_name, tmpdir)
+                mst_path = f"{tmpdir}/{mst_name}"
+
+                with open(mst_path, encoding="cp949") as f:
+                    for row in f:
+                        row = row.rstrip("\n")
+                        if len(row) < tail_len + 9:
+                            continue
+                        code = row[:9].rstrip()
+                        tail = row[-tail_len:]
+
+                        mng = tail[mng_offset]
+                        warn_code = tail[warn_offset : warn_offset + 2]
+                        stop = tail[stop_offset]
+
+                        if mng == "Y" or warn_code in _MST_WARN_CODES or stop == "Y":
+                            warned.add(code)
+        except Exception as e:
+            logger.warning("master_file.download_failed", url=url, error=str(e))
+
+    logger.info("master_file.warn_symbols_loaded", count=len(warned))
+    return warned
 
 
 def scan_market_universe(
@@ -19,18 +74,22 @@ def scan_market_universe(
     max_price: int = 0,
 ) -> list[dict[str, Any]]:
     """FinanceDataReader로 전체 KRX 종목 중 기본 조건 통과 종목 반환."""
+    global _warn_symbols
     import FinanceDataReader as fdr
 
     df = fdr.StockListing("KRX")
     df = df[df["Market"].isin(["KOSPI", "KOSDAQ"])]
     if "Dept" in df.columns:
-        df = df[~df["Dept"].str.contains("|".join(_WARN_KEYWORDS), na=False)]
+        pattern = "|".join(_WARN_KEYWORDS)
+        warn_mask = df["Dept"].str.contains(pattern, na=False)
+        _warn_symbols = set(df.loc[warn_mask, "Code"].tolist())
+        df = df[~warn_mask]
+        logger.info("market_universe.warn_excluded", count=len(_warn_symbols))
     df = df[df["Volume"] >= min_volume]
     df = df[df["ChagesRatio"] >= min_change_rate]
     df = df[df["ChagesRatio"] <= max_change_rate]
     if min_amount > 0:
         df = df[df["Amount"] >= min_amount]
-    # 우선주 제외 (코드 끝자리 0이 아닌 것)
     df = df[df["Code"].str[-1] == "0"]
     if max_price > 0:
         df = df[df["Close"] <= max_price]
@@ -47,6 +106,16 @@ def scan_market_universe(
             "volume": int(row["Volume"]) if row["Volume"] else 0,
             "amount": int(row["Amount"]) if row["Amount"] else 0,
         })
+
+    master_warned = load_warn_symbols_from_master()
+    if master_warned:
+        _warn_symbols.update(master_warned)
+        before = len(result)
+        result = [s for s in result if s["symbol"] not in _warn_symbols]
+        excluded = before - len(result)
+        if excluded:
+            logger.info("market_universe.master_excluded", count=excluded)
+
     logger.info("market_universe.scanned", filtered=len(df), top_n=top_n, passed=len(result))
     return result
 
@@ -79,6 +148,8 @@ class QuantScreener:
 
     def scan(self, symbols: list[str], held_symbols: list[str] | None = None) -> list[str]:
         held = set(held_symbols or [])
+        warned = get_warn_symbols()
+        symbols = [s for s in symbols if s not in warned]
         scored: list[dict[str, Any]] = []
 
         for sym in symbols:

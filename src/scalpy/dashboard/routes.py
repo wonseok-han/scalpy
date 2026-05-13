@@ -40,6 +40,9 @@ _registry_ref: StrategyRegistry | None = None
 _trade_repo_ref: Any = None
 _trading_started: bool = False
 _quant_rescan_task: asyncio.Task[None] | None = None
+_perf_cache: dict[str, dict] = {}
+_perf_sync_task: asyncio.Task[None] | None = None
+_PERF_SYNC_INTERVAL = 120
 
 _SSE_EVENTS = [
     "tick.received", "order.filled", "signal.generated",
@@ -71,6 +74,10 @@ def init_routes(
         engine.set_trade_repo(trade_repo)
         engine._performance.set_repo(trade_repo)
 
+    global _perf_sync_task
+    if trade_repo and _perf_sync_task is None:
+        _perf_sync_task = asyncio.create_task(_perf_sync_loop())
+
     if bus:
         for event in _SSE_EVENTS:
             bus.subscribe(event, _on_state_change)
@@ -99,15 +106,25 @@ def _on_daily_init(data: dict[str, Any]) -> None:
 
 
 async def _sync_trades_now() -> None:
+    global _perf_cache
     try:
         broker = _engine_ref._broker
         broker._last_ccld_first_page = -1
         trades = await broker.get_trade_history()
         if trades:
-            _trade_repo_ref.sync_trades(trades)
+            reasons = getattr(_engine_ref, "_trade_reasons", {})
+            _trade_repo_ref.sync_trades(trades, reason_map=reasons)
+        if not settings.get("mock", True):
+            profit_records = await broker.get_period_pnl()
+            if profit_records and _trade_repo_ref:
+                _trade_repo_ref.correct_pnl_from_api(profit_records)
         await _refresh_pnl_cache()
+        if _trade_repo_ref:
+            _perf_cache = _trade_repo_ref.get_strategy_performance()
         if _sse:
             _sse.broadcast("state", _build_sse_state())
+            if _perf_cache:
+                _sse.broadcast("performance", _perf_cache)
     except Exception as e:
         logger.error("routes.trade_sync_failed", error=str(e))
 
@@ -137,8 +154,22 @@ async def _daily_rescan(date: str) -> None:
     logger.info("routes.daily_rescan_done", date=date)
 
 
+async def _perf_sync_loop() -> None:
+    """주기적으로 전략 성과를 DB에서 계산하여 캐시."""
+    global _perf_cache
+    while True:
+        await asyncio.sleep(_PERF_SYNC_INTERVAL)
+        try:
+            if _trade_repo_ref:
+                _perf_cache = _trade_repo_ref.get_strategy_performance()
+                if _sse:
+                    _sse.broadcast("performance", _perf_cache)
+        except Exception as e:
+            logger.warning("routes.perf_sync_failed", error=str(e))
+
+
 async def _refresh_pnl_cache() -> None:
-    """실거래: KIS 기간손익 API에서 실현손익/수수료를 가져와 캐싱."""
+    """실거래: KIS 기간별손익일별합산(TTTC8708R)에서 당일 실현손익/수수료를 캐싱."""
     if not _state or not _engine_ref:
         return
     broker = _engine_ref._broker
@@ -146,18 +177,13 @@ async def _refresh_pnl_cache() -> None:
     if mock:
         return
     try:
-        records = await broker.get_period_pnl()
-        if not records:
+        summary = await broker.get_daily_profit_summary()
+        if not summary:
             return
-        total_pnl = 0
-        total_fees = 0
-        for r in records:
-            pnl_str = r.get("pnl", "")
-            if pnl_str:
-                total_pnl += int(pnl_str)
-            total_fees += r.get("fee", 0)
-        _state.last_daily_pnl = str(total_pnl)
-        _state.last_daily_fees = str(total_fees)
+        _state.last_daily_pnl = str(summary.get("tot_rlzt_pfls", 0))
+        _state.last_daily_fees = str(
+            summary.get("tot_fee", 0) + summary.get("tot_tltx", 0)
+        )
     except Exception as e:
         logger.warning("routes.pnl_cache_failed", error=str(e))
 
@@ -197,11 +223,28 @@ def _build_sse_state() -> dict[str, Any]:
         except Exception:
             pass
 
+    invested = 0
+    available_balance = "-"
+    pending_order_count = 0
+    if _engine_ref is not None:
+        for p in _engine_ref.positions.all():
+            invested += int(p.avg_price * p.quantity)
+        try:
+            cash = _engine_ref._cached_available_cash
+            if cash is not None:
+                available_balance = str(int(cash - _engine_ref._pending_buy_cost))
+        except Exception:
+            pass
+        pending_order_count = len(_engine_ref.orders.get_pending())
+
     return {
         "status": {
             "running": _engine_ref._running if _engine_ref else False,
             "balance": _state.last_api_balance if _state else "-",
             "prev_balance": _state.last_prev_balance if _state else "",
+            "invested": str(invested),
+            "available_balance": available_balance,
+            "pending_order_count": pending_order_count,
             "daily_pnl": daily_pnl,
             "total_fees": total_fees,
             "trade_count": trade_count,
@@ -476,8 +519,10 @@ async def _quant_start() -> list[str]:
     if not universe:
         broker = _engine_ref._broker if _engine_ref else None
         if broker:
+            from scalpy.screening.quant_screener import get_warn_symbols
             top = await broker.get_top_volume_stocks(30)
-            top = [s for s in top if not _is_etf(s.get("symbol", ""), s.get("name", ""))]
+            warned = get_warn_symbols()
+            top = [s for s in top if not _is_etf(s.get("symbol", ""), s.get("name", "")) and s.get("symbol", "") not in warned]
             universe = [s["symbol"] for s in top]
             names = {s["symbol"]: s.get("name", "") for s in top}
     if not universe:
@@ -795,26 +840,47 @@ async def quant_scan(refresh: bool = False) -> dict[str, Any]:
 
 @router.get("/performance")
 async def performance() -> dict[str, Any]:
+    global _perf_cache
     if not _engine_ref:
         return {"data": {}}
+    if _perf_cache:
+        return {"data": _perf_cache}
+    if _trade_repo_ref:
+        try:
+            _perf_cache = _trade_repo_ref.get_strategy_performance()
+            return {"data": _perf_cache}
+        except Exception:
+            pass
     return {"data": _engine_ref._performance.all_stats()}
+
+
+@router.get("/performance/history")
+async def performance_history() -> dict[str, Any]:
+    if not _trade_repo_ref:
+        return {"data": []}
+    try:
+        return {"data": _trade_repo_ref.get_daily_performance_history()}
+    except Exception:
+        return {"data": []}
 
 
 @router.get("/quant/config")
 async def quant_config() -> dict[str, Any]:
     quant = settings.get("quant", {})
+    strat_configs = settings.get("strategies", {})
+    strats = {}
+    for s in (_registry_ref.all() if _registry_ref else []):
+        if s.name not in _QUANT_STRATEGIES:
+            continue
+        params = dict(strat_configs.get(s.name, {}))
+        params["enabled"] = s.enabled
+        params["display_name"] = s.display_name
+        params["stop_loss_ratio"] = s.stop_loss_ratio
+        params["take_profit_ratio"] = s.take_profit_ratio
+        strats[s.name] = params
     return {
         "quant": dict(quant),
-        "strategies": {
-            s.name: {
-                "enabled": s.enabled,
-                "display_name": s.display_name,
-                "stop_loss_ratio": s.stop_loss_ratio,
-                "take_profit_ratio": s.take_profit_ratio,
-            }
-            for s in (_registry_ref.all() if _registry_ref else [])
-            if s.name in _QUANT_STRATEGIES
-        },
+        "strategies": strats,
     }
 
 

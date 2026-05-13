@@ -84,14 +84,21 @@ async def _trade_sync_loop(
     broker: "BaseBroker",
     trade_repo: "TradeRepository",
     stop_event: asyncio.Event,
+    engine: "TradingEngine | None" = None,
 ) -> None:
+    mock = settings.get("mock", True)
     while not stop_event.is_set():
         try:
             trades = await broker.get_trade_history()
             if trades:
-                count = trade_repo.sync_trades(trades)
+                reasons = getattr(engine, "_trade_reasons", {}) if engine else {}
+                count = trade_repo.sync_trades(trades, reason_map=reasons)
                 if count:
                     logger.info("trade_sync.new_trades", count=count)
+            if not mock:
+                profit_records = await broker.get_period_pnl()
+                if profit_records:
+                    trade_repo.correct_pnl_from_api(profit_records)
         except Exception as e:
             logger.error("trade_sync.error", error=str(e))
 
@@ -197,9 +204,11 @@ async def _quant_scan(
             logger.warning("quant.market_universe_failed", error=str(e))
     if not universe:
         try:
+            from scalpy.screening.quant_screener import get_warn_symbols
             broker = engine._broker
             top_stocks = await broker.get_top_volume_stocks(30)
-            universe = [s["symbol"] for s in top_stocks]
+            warned = get_warn_symbols()
+            universe = [s["symbol"] for s in top_stocks if s.get("symbol", "") not in warned]
         except Exception as e:
             logger.warning("quant.universe_fallback", error=str(e))
             universe = settings.get("trading.symbols", ["005930"])
@@ -401,7 +410,7 @@ async def run() -> None:
         logger.info("scalpy.telegram_enabled")
 
     if trade_repo:
-        asyncio.create_task(_trade_sync_loop(broker, trade_repo, stop_event))
+        asyncio.create_task(_trade_sync_loop(broker, trade_repo, stop_event, engine))
         logger.info("scalpy.trade_sync_started", interval=_TRADE_SYNC_INTERVAL)
 
     if auto_start:

@@ -59,13 +59,14 @@
 
 
 /* ── Quant-specific ── */
-.config-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; }
-.config-item { display: flex; justify-content: space-between; align-items: center; padding: 8px 0; }
-.config-label { font-size: 0.78rem; color: var(--text-secondary); }
-.config-value { font-size: 0.82rem; font-weight: 600; color: var(--text-primary); }
+.config-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 0; }
+.config-cell { padding: 14px 18px; border-right: 1px solid var(--border); }
+.config-cell:last-child { border-right: none; }
+.config-cell .cl { display: block; font-size: 0.68rem; color: var(--text-tertiary); font-weight: 500; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px; }
+.config-cell .cv { font-size: 1rem; font-weight: 700; color: var(--text-primary); font-variant-numeric: tabular-nums; }
 
-.score-bar { width: 60px; height: 6px; background: var(--bg-elevated); border-radius: 3px; display: inline-block; vertical-align: middle; margin-left: 6px; }
-.score-fill { height: 100%; border-radius: 3px; background: var(--accent); }
+.score-bar { width: 48px; height: 6px; background: var(--bg-elevated); border-radius: 3px; display: inline-block; vertical-align: middle; margin-left: 6px; overflow: hidden; }
+.score-fill { height: 100%; border-radius: 3px; min-width: 2px; background: linear-gradient(90deg, var(--accent), #4ade80); }
 
 .strat-chip {
   background: var(--accent-soft); border: 1px solid rgba(139,92,246,0.2);
@@ -152,24 +153,24 @@
       <div class="metric-sub" id="balance-prev">-</div>
     </div>
     <div class="metric-card">
+      <div class="metric-label">매수금액</div>
+      <div class="metric-value" id="invested">-</div>
+      <div class="metric-sub" id="invested-sub">보유 종목 매입 합계</div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-label">주문가능금액</div>
+      <div class="metric-value" id="available-balance">-</div>
+      <div class="metric-sub" id="pending-orders">미체결: 0건</div>
+    </div>
+    <div class="metric-card">
       <div class="metric-label">당일 실현손익</div>
       <div class="metric-value" id="daily-pnl">-</div>
       <div class="metric-sub" id="daily-fees">수수료+세금: 0원</div>
     </div>
     <div class="metric-card">
-      <div class="metric-label">보유 포지션</div>
-      <div class="metric-value" id="pos-count">0</div>
-      <div class="metric-sub">Active Positions</div>
-    </div>
-    <div class="metric-card">
-      <div class="metric-label">퀀트 후보</div>
-      <div class="metric-value" id="candidate-count">-</div>
-      <div class="metric-sub">Candidates</div>
-    </div>
-    <div class="metric-card">
-      <div class="metric-label">마지막 틱</div>
-      <div class="metric-value" id="last-tick" style="font-size:1.1rem">-</div>
-      <div class="metric-sub">Last Tick</div>
+      <div class="metric-label">보유 / 후보</div>
+      <div class="metric-value"><span id="pos-count">0</span> <span style="color:var(--text-tertiary);font-weight:400">/ </span><span id="candidate-count" style="color:var(--accent)">-</span></div>
+      <div class="metric-sub">Positions / Candidates</div>
     </div>
   </div>
 
@@ -273,8 +274,9 @@
             <th class="text-right">체결가</th>
             <th class="text-right">수수료</th>
             <th class="text-right">손익</th>
+            <th>사유</th>
           </tr></thead>
-          <tbody id="trade-table"><tr><td colspan="7" class="empty-row">거래 없음</td></tr></tbody>
+          <tbody id="trade-table"><tr><td colspan="8" class="empty-row">거래 없음</td></tr></tbody>
         </table>
       </div>
       <div id="trade-pager" style="display:none;padding:8px 12px;border-top:1px solid var(--border);justify-content:center;align-items:center;gap:4px;font-size:0.8rem;color:var(--text-secondary)">
@@ -301,11 +303,39 @@
           <th class="text-right">승/패</th>
           <th class="text-right">승률</th>
           <th class="text-right">총 손익</th>
-          <th class="text-right">평균 손익</th>
+          <th class="text-right">평균손익률</th>
           <th class="text-right">MDD</th>
         </tr></thead>
         <tbody id="perf-table"><tr><td colspan="7" class="empty-row">데이터 없음</td></tr></tbody>
       </table>
+    </div>
+  </div>
+
+  <!-- Daily Performance History -->
+  <div class="card">
+    <div class="card-header">
+      <span class="card-title">일자별 성과</span>
+      <span class="card-badge" id="perf-history-badge">0일</span>
+    </div>
+    <div class="card-body" style="overflow-x:auto">
+      <table>
+        <thead><tr>
+          <th>날짜</th>
+          <th class="text-right">거래수</th>
+          <th class="text-right">승/패</th>
+          <th class="text-right">승률</th>
+          <th class="text-right">당일 손익</th>
+          <th class="text-right">누적 손익</th>
+        </tr></thead>
+        <tbody id="perf-history-table"><tr><td colspan="6" class="empty-row">데이터 없음</td></tr></tbody>
+      </table>
+      <div id="perf-history-pager" style="display:none;padding:8px 12px;border-top:1px solid var(--border);justify-content:center;align-items:center;gap:4px;font-size:0.8rem;color:var(--text-secondary)">
+        <button class="btn" style="padding:4px 10px;font-size:0.75rem" onclick="perfHistFirst()">«</button>
+        <button class="btn" style="padding:4px 10px;font-size:0.75rem" onclick="perfHistPrev()">‹</button>
+        <span id="perf-history-page-info" style="min-width:100px;text-align:center"></span>
+        <button class="btn" style="padding:4px 10px;font-size:0.75rem" onclick="perfHistNext()">›</button>
+        <button class="btn" style="padding:4px 10px;font-size:0.75rem" onclick="perfHistLast()">»</button>
+      </div>
     </div>
   </div>
 
@@ -314,8 +344,9 @@
     <div class="card-header">
       <span class="card-title">퀀트 설정</span>
     </div>
-    <div class="card-body">
+    <div class="card-body" style="padding:0">
       <div class="config-grid" id="config-grid"></div>
+      <div id="strat-config-sections"></div>
     </div>
   </div>
 
@@ -407,6 +438,7 @@ const _QUANT_NAMES=new Set(['momentum','mean_reversion','factor']);
 const _systemLabels={'synced':'기존 보유','manual':'수동 매매','unknown':'알 수 없음'};
 let _names={},_quantStrats={},_posCount=0;
 let _allTrades=[],_tradePage=0;const _tradePageSize=10;
+let _allPerfHistory=[],_perfHistPage=0;const _perfHistPageSize=10;
 function pnlType(v){const n=Number(v);return n>0?'up':n<0?'down':'neutral'}
 function stratLabel(k){if(!k)return '-';const s=_quantStrats[k];return s?(s.display_name||k):(_systemLabels[k]||k);}
 
@@ -438,7 +470,7 @@ async function toggleStrat(name){
   try{
     const r=await fetch('/api/strategies/'+name+'/toggle',{method:'POST'});
     const d=await r.json();
-    if(d.success&&_quantStrats[name]){_quantStrats[name].enabled=d.enabled;renderQuantStrats();renderRiskTable();toast((_quantStrats[name].display_name||name)+(d.enabled?' 활성화':' 비활성화'),'success');}
+    if(d.success&&_quantStrats[name]){_quantStrats[name].enabled=d.enabled;renderQuantStrats();renderStratConfigs(_quantStrats);renderRiskTable();toast((_quantStrats[name].display_name||name)+(d.enabled?' 활성화':' 비활성화'),'success');}
   }catch(e){console.error(e);}
 }
 
@@ -462,7 +494,11 @@ function updateStatus(s){
   }
   _posCount=s.position_count;
   document.getElementById('pos-count').textContent=s.position_count;
-  document.getElementById('last-tick').textContent=s.last_tick_at||'--';
+  const inv=s.invested||'0';
+  document.getElementById('invested').textContent=inv==='0'?'-':fmt(inv)+'원';
+  const avail=s.available_balance||'-';
+  document.getElementById('available-balance').textContent=avail==='-'?'-':fmt(avail)+'원';
+  document.getElementById('pending-orders').textContent='미체결: '+(s.pending_order_count||0)+'건';
   const engineEl=document.getElementById('engine-running');
   engineEl.textContent=s.running?'실행 중':'대기';
   engineEl.style.color=s.running?'var(--profit)':'var(--text-secondary)';
@@ -497,7 +533,7 @@ function updatePositions(list){
 function renderTradePage(){
   const tb=document.getElementById('trade-table');
   const pager=document.getElementById('trade-pager');
-  if(!_allTrades.length){tb.innerHTML='<tr><td class="empty-row" colspan="7">거래 없음</td></tr>';pager.style.display='none';return;}
+  if(!_allTrades.length){tb.innerHTML='<tr><td class="empty-row" colspan="8">거래 없음</td></tr>';pager.style.display='none';return;}
   const total=_allTrades.length,maxPage=Math.ceil(total/_tradePageSize)-1;
   const start=_tradePage*_tradePageSize;
   const items=_allTrades.slice(start,start+_tradePageSize);
@@ -505,6 +541,8 @@ function renderTradePage(){
     const pnl=t.pnl?Number(t.pnl):null;
     const pct=t.pnl_pct!==''&&t.pnl_pct!==undefined?Number(t.pnl_pct):null;
     const pnlStr=pnl!==null?`<span class="${pnl>=0?'text-profit':'text-loss'}">${pnlSign(pnl)}원${pct!==null?' ('+(pct>0?'+':'')+pct.toFixed(2)+'%)':''}</span>`:'';
+    const reasonMap={signal:'전략',stop_loss:'손절',trailing_stop:'트레일링',stagnation:'정체',market_close:'장마감'};
+    const reasonLabel=reasonMap[t.reason]||t.reason||'';
     return `<tr>
       <td>${t.time}</td>
       <td><span class="side-tag ${t.side==='buy'?'buy':'sell'}">${t.side==='buy'?'BUY':'SELL'}</span></td>
@@ -513,6 +551,7 @@ function renderTradePage(){
       <td class="text-right">${fmt(t.price)}</td>
       <td class="text-right">${t.fee?fmt(t.fee)+'원':''}</td>
       <td class="text-right">${pnlStr}</td>
+      <td>${reasonLabel}</td>
     </tr>`;
   }).join('');
   if(total>_tradePageSize){
@@ -536,14 +575,42 @@ async function loadConfig(){
       ['최대 종목수','max_stocks'],['모멘텀 기간','momentum_days'],
       ['최소 평균거래량','min_avg_volume'],['최소 모멘텀','min_momentum'],
       ['OHLCV 갱신주기','ohlcv_refresh_minutes'],
-    ].map(([l,k])=>`<div class="config-item"><span class="config-label">${l}</span><span class="config-value">${k==='min_avg_volume'?fmt(q[k]||0):(q[k]??'-')}</span></div>`).join('');
+    ].map(([l,k])=>`<div class="config-cell"><span class="cl">${l}</span><span class="cv">${k==='min_avg_volume'?fmt(q[k]||0):(q[k]??'-')}</span></div>`).join('');
     const strats=d.strategies||{};_quantStrats={};
     for(const [name,s] of Object.entries(strats)){
       if(_QUANT_NAMES.has(name))_quantStrats[name]=s;
     }
+    renderStratConfigs(strats);
     renderRiskTable();
     renderQuantStrats();
   }catch(e){console.error(e);}
+}
+
+const _PARAM_LABELS={
+  lookback:'관측 윈도우',volume_multiplier:'거래량 배수',breakout_pct:'돌파 비율',
+  window:'BB 윈도우',num_std:'표준편차 배수',
+  buy_threshold:'매수 임계값',sell_threshold:'매도 임계값',
+  weight_momentum:'모멘텀 가중치',weight_volume:'거래량 가중치',weight_orderbook:'호가 가중치',
+  cooldown_seconds:'쿨다운(초)',stop_loss_ratio:'손절 비율',take_profit_ratio:'익절 비율',
+};
+const _SKIP_KEYS=new Set(['enabled','display_name']);
+const _RATIO_KEYS=new Set(['stop_loss_ratio','take_profit_ratio','breakout_pct']);
+function renderStratConfigs(strats){
+  const el=document.getElementById('strat-config-sections');
+  const active=Object.entries(strats).filter(([,s])=>s.enabled);
+  if(!active.length){el.innerHTML='';return;}
+  el.innerHTML=active.map(([name,s])=>{
+    const label=s.display_name||name;
+    const params=Object.entries(s).filter(([k])=>!_SKIP_KEYS.has(k));
+    const cells=params.map(([k,v])=>{
+      const pl=_PARAM_LABELS[k]||k;
+      let pv;
+      if(typeof v==='number'&&_RATIO_KEYS.has(k)) pv=(v*100).toFixed(1)+'%';
+      else pv=v??'-';
+      return `<div class="config-cell"><span class="cl">${pl}</span><span class="cv">${pv}</span></div>`;
+    }).join('');
+    return `<div style="border-top:1px solid var(--border)"><div style="padding:10px 18px 4px;font-size:0.72rem;color:var(--text-secondary);font-weight:600;letter-spacing:0.3px">${label}</div><div class="config-grid">${cells}</div></div>`;
+  }).join('');
 }
 
 // ── Quant Scan ──
@@ -558,11 +625,8 @@ function _renderScanItems(items){
   _scanSymbols=items.map(s=>s.symbol);
   document.getElementById('candidate-count').textContent=items.length+'개';
   if(!items.length){tb.innerHTML='<tr><td colspan="10" class="empty-row">조건에 맞는 종목 없음</td></tr>';return;}
-  const maxScore=Math.max(...items.map(s=>s.score));
-  const minScore=Math.min(...items.map(s=>s.score));
-  const scoreRange=maxScore-minScore||1;
   tb.innerHTML=items.map((s,i)=>{
-    const pct=((s.score-minScore)/scoreRange)*100;
+    const pct=100/(1+Math.exp(-2.5*s.score));
     return `<tr>
       <td style="color:var(--text-tertiary)">${i+1}</td>
       <td><strong>${s.name||s.symbol}</strong> <span style="color:var(--text-tertiary);font-size:0.7rem">${s.symbol}</span></td>
@@ -595,14 +659,54 @@ function _restoreScan(){
 }
 
 // ── Performance ──
-async function loadPerf(){
+function renderPerf(stats){
   const tb=document.getElementById('perf-table');
+  const keys=Object.keys(stats);
+  if(!keys.length){tb.innerHTML='<tr><td colspan="7" class="empty-row">데이터 없음</td></tr>';return;}
+  tb.innerHTML=keys.map(k=>{const s=stats[k];const pnl=Number(s.total_pnl);const ap=s.avg_pnl_pct!=null?Number(s.avg_pnl_pct):null;return `<tr><td>${k}</td><td class="text-right">${s.trades}</td><td class="text-right">${s.wins}/${s.losses}</td><td class="text-right">${s.win_rate}%</td><td class="text-right ${pnl>=0?'text-profit':'text-loss'}">${pnlSign(pnl)}원</td><td class="text-right ${ap!==null?(ap>=0?'text-profit':'text-loss'):''}">${ap!==null?(ap>0?'+':'')+ap.toFixed(2)+'%':'-'}</td><td class="text-right text-loss">${fmt(s.max_drawdown)}원</td></tr>`;}).join('');
+}
+async function loadPerf(){
   try{
     const d=await fetch('/api/performance').then(r=>r.json());
-    const stats=d.data||{};const keys=Object.keys(stats);
-    if(!keys.length){tb.innerHTML='<tr><td colspan="7" class="empty-row">데이터 없음</td></tr>';return;}
-    tb.innerHTML=keys.map(k=>{const s=stats[k];const pnl=Number(s.total_pnl);return `<tr><td>${k}</td><td class="text-right">${s.trades}</td><td class="text-right">${s.wins}/${s.losses}</td><td class="text-right">${s.win_rate}%</td><td class="text-right ${pnl>=0?'text-profit':'text-loss'}">${pnlSign(pnl)}원</td><td class="text-right">${fmt(s.avg_pnl)}원</td><td class="text-right text-loss">${fmt(s.max_drawdown)}원</td></tr>`;}).join('');
-  }catch(e){tb.innerHTML='<tr><td colspan="7" class="empty-row">오류</td></tr>';}
+    renderPerf(d.data||{});
+  }catch(e){document.getElementById('perf-table').innerHTML='<tr><td colspan="7" class="empty-row">오류</td></tr>';}
+}
+function renderPerfHistPage(){
+  const tb=document.getElementById('perf-history-table');
+  const pager=document.getElementById('perf-history-pager');
+  if(!_allPerfHistory.length){tb.innerHTML='<tr><td colspan="6" class="empty-row">데이터 없음</td></tr>';pager.style.display='none';return;}
+  const total=_allPerfHistory.length,maxPage=Math.ceil(total/_perfHistPageSize)-1;
+  const start=_perfHistPage*_perfHistPageSize;
+  const items=_allPerfHistory.slice(start,start+_perfHistPageSize);
+  tb.innerHTML=items.map(d=>{
+    const pnl=d.pnl;const cum=d.cumulative_pnl;
+    return `<tr>
+      <td>${d.date}</td>
+      <td class="text-right">${d.trades}</td>
+      <td class="text-right">${d.wins}/${d.losses}</td>
+      <td class="text-right">${d.win_rate}%</td>
+      <td class="text-right ${pnl>=0?'text-profit':'text-loss'}">${pnlSign(pnl)}원</td>
+      <td class="text-right ${cum>=0?'text-profit':'text-loss'}">${pnlSign(cum)}원</td>
+    </tr>`;
+  }).join('');
+  if(total>_perfHistPageSize){
+    pager.style.display='flex';
+    document.getElementById('perf-history-page-info').textContent=`${start+1}-${Math.min(start+_perfHistPageSize,total)} / ${total}일`;
+    pager.children[0].disabled=_perfHistPage<=0;pager.children[1].disabled=_perfHistPage<=0;
+    pager.children[3].disabled=_perfHistPage>=maxPage;pager.children[4].disabled=_perfHistPage>=maxPage;
+  }else{pager.style.display='none';}
+}
+function perfHistFirst(){if(_perfHistPage>0){_perfHistPage=0;renderPerfHistPage();}}
+function perfHistPrev(){if(_perfHistPage>0){_perfHistPage--;renderPerfHistPage();}}
+function perfHistNext(){const m=Math.ceil(_allPerfHistory.length/_perfHistPageSize)-1;if(_perfHistPage<m){_perfHistPage++;renderPerfHistPage();}}
+function perfHistLast(){const m=Math.ceil(_allPerfHistory.length/_perfHistPageSize)-1;if(_perfHistPage<m){_perfHistPage=m;renderPerfHistPage();}}
+async function loadPerfHistory(){
+  try{
+    const d=await fetch('/api/performance/history').then(r=>r.json());
+    _allPerfHistory=d.data||[];_perfHistPage=0;
+    document.getElementById('perf-history-badge').textContent=_allPerfHistory.length+'일';
+    renderPerfHistPage();
+  }catch(e){document.getElementById('perf-history-table').innerHTML='<tr><td colspan="6" class="empty-row">오류</td></tr>';}
 }
 
 // ── OHLCV Fetch ──
@@ -684,6 +788,7 @@ async function loadInitial(){
 const badge=document.getElementById('conn-badge');
 const es=new EventSource('/api/events');
 es.addEventListener('state',e=>{try{applySseState(JSON.parse(e.data))}catch(err){console.error(err)}});
+es.addEventListener('performance',e=>{try{renderPerf(JSON.parse(e.data))}catch(err){console.error(err)}});
 es.onopen=()=>{badge.textContent='LIVE';badge.className='conn-badge conn-live';};
 es.onerror=()=>{badge.textContent='OFFLINE';badge.className='conn-badge conn-off';document.getElementById('engine-status').innerHTML='<span class="pulse-dot off"></span> 연결 끊김';};
 
@@ -807,6 +912,7 @@ async function applyJson(){
 loadInitial();
 loadConfig();
 loadPerf();
+loadPerfHistory();
 loadSettings();
 setInterval(loadTrades,60000);
 setInterval(loadBalance,30000);

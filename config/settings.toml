@@ -32,7 +32,7 @@ max_position_size = 100
 # 종목당 최대 투입 비율 (0.3 = 잔고의 30%, 가격 × 수량이 이 비율 초과 시 수량 축소)
 max_position_ratio = 0.3
 # 동시 보유 최대 포지션 수 (초과 시 신규 매수 차단)
-max_open_positions = 3
+max_open_positions = 5
 # 장 마감 시 자동 청산 (true: 스캘핑 기본, false: 퀀트 오버나이트 보유)
 market_close_liquidate = false
 # 손절 비율 (0.003 = 0.3%, 평균단가 대비 하락 시 자동 청산)

@@ -5,7 +5,7 @@ import structlog
 from sqlalchemy import create_engine, func, inspect, select, text
 from sqlalchemy.orm import Session
 
-from scalpy.data.schema import Base, PositionRow, StrategyTradeLog, TradeRow
+from scalpy.data.schema import Base, PositionRow, TradeRow
 
 logger = structlog.get_logger()
 
@@ -31,15 +31,26 @@ class TradeRepository:
             with self._engine.begin() as conn:
                 conn.execute(text("ALTER TABLE trades ADD COLUMN mock BOOLEAN DEFAULT true"))
             logger.info("migration.added_mock_column")
+        if "strategy" not in columns:
+            with self._engine.begin() as conn:
+                conn.execute(text("ALTER TABLE trades ADD COLUMN strategy VARCHAR(50) DEFAULT ''"))
+                conn.execute(text("UPDATE trades SET strategy = 'factor' WHERE strategy = '' OR strategy IS NULL"))
+                conn.execute(text("UPDATE positions SET strategy = 'factor' WHERE strategy = 'synced' OR strategy = ''"))
+            logger.info("migration.added_strategy_column")
+        if "reason" not in columns:
+            with self._engine.begin() as conn:
+                conn.execute(text("ALTER TABLE trades ADD COLUMN reason VARCHAR(30) DEFAULT ''"))
+            logger.info("migration.added_reason_column")
 
     def recreate_trades_table(self) -> None:
         TradeRow.__table__.drop(self._engine, checkfirst=True)
         TradeRow.__table__.create(self._engine, checkfirst=True)
 
-    def sync_trades(self, trades: list[dict]) -> int:
+    def sync_trades(self, trades: list[dict], reason_map: dict[str, str] | None = None) -> int:
         """ccld API 데이터를 DB에 upsert. (order_no, order_date) 기준."""
         if not trades:
             return 0
+        reasons = reason_map or {}
 
         new_count = 0
         update_count = 0
@@ -56,6 +67,21 @@ class TradeRepository:
             for r in rows:
                 existing[(r.order_no, r.order_date)] = r.tot_ccld_qty
 
+            strat_map: dict[str, str] = {}
+            pos_rows = session.scalars(
+                select(PositionRow).where(PositionRow.closed_at.is_(None))
+            ).all()
+            for pr in pos_rows:
+                strat_map[pr.symbol] = pr.strategy
+            closed_pos = session.execute(
+                select(PositionRow.symbol, PositionRow.strategy)
+                .where(PositionRow.closed_at.isnot(None))
+                .order_by(PositionRow.closed_at.desc())
+            ).all()
+            for cp in closed_pos:
+                if cp.symbol not in strat_map:
+                    strat_map[cp.symbol] = cp.strategy
+
             for t in trades:
                 order_no = t.get("order_no", "")
                 order_date = t.get("order_date", "") or today
@@ -71,12 +97,17 @@ class TradeRepository:
                 fee = self._calc_fee(t)
 
                 if prev_qty is None:
+                    symbol = t.get("symbol", "")
+                    side_val = t.get("side", "")
+                    reason = reasons.get(symbol, "")
+                    if not reason:
+                        reason = "signal" if side_val in ("buy", "sell") else ""
                     row = TradeRow(
                         order_no=order_no,
                         order_date=order_date,
-                        symbol=t.get("symbol", ""),
+                        symbol=symbol,
                         name=t.get("name", ""),
-                        side=t.get("side", ""),
+                        side=side_val,
                         ord_qty=t.get("ord_qty", 0),
                         ord_price=t.get("ord_price", 0),
                         ord_time=t.get("ord_time", ""),
@@ -87,6 +118,8 @@ class TradeRepository:
                         orgn_order_no=t.get("orgn_order_no", ""),
                         ord_dvsn_cd=t.get("ord_dvsn_cd", ""),
                         cncl_yn=t.get("cncl_yn", ""),
+                        strategy=strat_map.get(symbol, ""),
+                        reason=reason,
                         fee=fee,
                         mock=self._mock,
                     )
@@ -151,10 +184,10 @@ class TradeRepository:
                 ).order_by(TradeRow.order_date, TradeRow.ord_time)
             ).all()
 
-            buy_queue: list[tuple[int, float]] = []
+            buy_queue: list[tuple[int, float, int]] = []
             for b in buys:
                 if b.tot_ccld_qty > 0 and b.avg_price > 0:
-                    buy_queue.append((b.tot_ccld_qty, float(b.avg_price)))
+                    buy_queue.append((b.tot_ccld_qty, float(b.avg_price), b.fee))
 
             qi = 0
             remaining = buy_queue[0][0] if buy_queue else 0
@@ -166,10 +199,12 @@ class TradeRepository:
 
                 to_match = sell.tot_ccld_qty
                 total_buy_cost = 0.0
+                total_buy_fee = 0
 
                 while to_match > 0 and qi < len(buy_queue):
                     take = min(to_match, remaining)
                     total_buy_cost += take * buy_queue[qi][1]
+                    total_buy_fee += buy_queue[qi][2] * take // buy_queue[qi][0]
                     to_match -= take
                     remaining -= take
                     if remaining <= 0:
@@ -182,10 +217,55 @@ class TradeRepository:
 
                 matched_qty = sell.tot_ccld_qty
                 buy_avg = total_buy_cost / matched_qty
-                buy_fee = int(total_buy_cost * float(_COMMISSION_RATE))
-                sell.pnl = int((sell.avg_price - buy_avg) * matched_qty - sell.fee - buy_fee)
+                sell.pnl = int((sell.avg_price - buy_avg) * matched_qty - sell.fee - total_buy_fee)
 
         session.commit()
+
+    def correct_pnl_from_api(self, profit_records: list[dict]) -> int:
+        """TTTC8715R 종목별 실제 pnl(수수료/세금 차감 후)로 DB 매도 건을 보정."""
+        if not profit_records:
+            return 0
+        today = date.today().strftime("%Y%m%d")
+        corrected = 0
+        with Session(self._engine) as session:
+            for rec in profit_records:
+                symbol = rec.get("symbol", "")
+                if not symbol or rec.get("side") != "sell":
+                    continue
+                actual_pnl_str = rec.get("pnl", "")
+                if not actual_pnl_str:
+                    continue
+                actual_pnl = int(actual_pnl_str)
+
+                sells = session.scalars(
+                    select(TradeRow).where(
+                        TradeRow.symbol == symbol,
+                        TradeRow.side == "sell",
+                        TradeRow.order_date == today,
+                        TradeRow.mock == self._mock,
+                    ).order_by(TradeRow.ord_time)
+                ).all()
+                if not sells:
+                    continue
+
+                if len(sells) == 1:
+                    sells[0].pnl = actual_pnl
+                    corrected += 1
+                else:
+                    total_amt = sum(s.tot_ccld_amt for s in sells) or 1
+                    pnl_remaining = actual_pnl
+                    for i, s in enumerate(sells):
+                        if i == len(sells) - 1:
+                            s.pnl = pnl_remaining
+                        else:
+                            s.pnl = int(actual_pnl * s.tot_ccld_amt / total_amt)
+                            pnl_remaining -= s.pnl
+                        corrected += 1
+
+            if corrected:
+                session.commit()
+                logger.info("trade_sync.pnl_corrected", count=corrected)
+        return corrected
 
     def recalc_all_pnl(self) -> int:
         """전체 종목의 pnl을 FIFO로 재계산. 반환값: 갱신된 sell 건수."""
@@ -214,10 +294,10 @@ class TradeRepository:
                     ).order_by(TradeRow.order_date, TradeRow.ord_time)
                 ).all()
 
-                buy_queue: list[tuple[int, float]] = []
+                buy_queue: list[tuple[int, float, int]] = []
                 for b in buys:
                     if b.tot_ccld_qty > 0 and b.avg_price > 0:
-                        buy_queue.append((b.tot_ccld_qty, float(b.avg_price)))
+                        buy_queue.append((b.tot_ccld_qty, float(b.avg_price), b.fee))
 
                 qi = 0
                 remaining = buy_queue[0][0] if buy_queue else 0
@@ -229,10 +309,12 @@ class TradeRepository:
 
                     to_match = sell.tot_ccld_qty
                     total_buy_cost = 0.0
+                    total_buy_fee = 0
 
                     while to_match > 0 and qi < len(buy_queue):
                         take = min(to_match, remaining)
                         total_buy_cost += take * buy_queue[qi][1]
+                        total_buy_fee += buy_queue[qi][2] * take // buy_queue[qi][0]
                         to_match -= take
                         remaining -= take
                         if remaining <= 0:
@@ -245,8 +327,7 @@ class TradeRepository:
 
                     matched_qty = sell.tot_ccld_qty
                     buy_avg = total_buy_cost / matched_qty
-                    buy_fee = int(total_buy_cost * float(_COMMISSION_RATE))
-                    sell.pnl = int((sell.avg_price - buy_avg) * matched_qty - sell.fee - buy_fee)
+                    sell.pnl = int((sell.avg_price - buy_avg) * matched_qty - sell.fee - total_buy_fee)
                     updated += 1
 
             session.commit()
@@ -286,24 +367,152 @@ class TradeRepository:
             )
             return int(result or 0)
 
-    def record_strategy_trade(self, strategy: str, symbol: str, pnl: float) -> None:
-        with Session(self._engine) as session:
-            session.add(StrategyTradeLog(
-                strategy=strategy, symbol=symbol, pnl=pnl, mock=self._mock,
-            ))
-            session.commit()
 
-    def get_strategy_trades(self) -> list[dict]:
+    def get_strategy_performance(self, day: date | None = None) -> dict[str, dict]:
+        """trades 테이블에서 전략별 라운드트립(매수→매도) 기반 성과 집계."""
+        day = day or date.today()
+        day_str = day.strftime("%Y%m%d")
         with Session(self._engine) as session:
-            rows = session.scalars(
-                select(StrategyTradeLog)
-                .where(StrategyTradeLog.mock == self._mock)
-                .order_by(StrategyTradeLog.closed_at)
-            ).all()
-            return [
-                {"strategy": r.strategy, "symbol": r.symbol, "pnl": float(r.pnl)}
-                for r in rows
-            ]
+            symbols = [r[0] for r in session.execute(
+                select(TradeRow.symbol).where(
+                    TradeRow.side == "sell",
+                    TradeRow.order_date == day_str,
+                    TradeRow.mock == self._mock,
+                    TradeRow.strategy != "",
+                ).group_by(TradeRow.symbol)
+            ).all()]
+
+            stats: dict[str, dict] = {}
+            for symbol in symbols:
+                buys = session.scalars(
+                    select(TradeRow).where(
+                        TradeRow.symbol == symbol,
+                        TradeRow.side == "buy",
+                        TradeRow.mock == self._mock,
+                    ).order_by(TradeRow.order_date, TradeRow.ord_time)
+                ).all()
+                sells = session.scalars(
+                    select(TradeRow).where(
+                        TradeRow.symbol == symbol,
+                        TradeRow.side == "sell",
+                        TradeRow.order_date == day_str,
+                        TradeRow.mock == self._mock,
+                    ).order_by(TradeRow.order_date, TradeRow.ord_time)
+                ).all()
+
+                buy_queue: list[tuple[int, float, str, str, int]] = []
+                for b in buys:
+                    if b.tot_ccld_qty > 0 and b.avg_price > 0:
+                        buy_queue.append((b.tot_ccld_qty, float(b.avg_price), b.order_date, b.strategy, b.fee))
+
+                qi = 0
+                remaining = buy_queue[0][0] if buy_queue else 0
+
+                for sell in sells:
+                    if sell.avg_price == 0 or sell.tot_ccld_qty == 0:
+                        continue
+                    strat = sell.strategy or (buy_queue[qi][3] if qi < len(buy_queue) else "")
+                    if not strat:
+                        continue
+
+                    to_match = sell.tot_ccld_qty
+                    total_buy_cost = 0.0
+                    total_buy_fee = 0
+                    buy_date = buy_queue[qi][2] if qi < len(buy_queue) else sell.order_date
+
+                    while to_match > 0 and qi < len(buy_queue):
+                        take = min(to_match, remaining)
+                        total_buy_cost += take * buy_queue[qi][1]
+                        total_buy_fee += buy_queue[qi][4] * take // buy_queue[qi][0]
+                        buy_date = buy_queue[qi][2]
+                        to_match -= take
+                        remaining -= take
+                        if remaining <= 0:
+                            qi += 1
+                            remaining = buy_queue[qi][0] if qi < len(buy_queue) else 0
+
+                    if to_match > 0:
+                        continue
+
+                    matched_qty = sell.tot_ccld_qty
+                    buy_avg = total_buy_cost / matched_qty
+                    if sell.pnl is not None:
+                        pnl = sell.pnl
+                    else:
+                        pnl = int((sell.avg_price - buy_avg) * matched_qty - sell.fee - total_buy_fee)
+                    pnl_pct = round((sell.avg_price - buy_avg) / buy_avg * 100, 2) if buy_avg > 0 else 0.0
+                    cross_day = buy_date != sell.order_date
+
+                    s = stats.setdefault(strat, {
+                        "trades": 0, "wins": 0, "losses": 0,
+                        "total_pnl": 0, "max_drawdown": 0, "_peak": 0,
+                        "intraday_trades": 0, "cross_day_trades": 0,
+                        "avg_pnl_pct": 0.0, "_pnl_pcts": [],
+                    })
+                    s["trades"] += 1
+                    s["total_pnl"] += pnl
+                    s["_pnl_pcts"].append(pnl_pct)
+                    if pnl > 0:
+                        s["wins"] += 1
+                    elif pnl < 0:
+                        s["losses"] += 1
+                    if cross_day:
+                        s["cross_day_trades"] += 1
+                    else:
+                        s["intraday_trades"] += 1
+                    if s["total_pnl"] > s["_peak"]:
+                        s["_peak"] = s["total_pnl"]
+                    dd = s["_peak"] - s["total_pnl"]
+                    if dd > s["max_drawdown"]:
+                        s["max_drawdown"] = dd
+
+            for s in stats.values():
+                s["win_rate"] = round(s["wins"] / s["trades"] * 100, 1) if s["trades"] > 0 else 0.0
+                pcts = s.pop("_pnl_pcts")
+                s["avg_pnl_pct"] = round(sum(pcts) / len(pcts), 2) if pcts else 0.0
+                s["total_pnl"] = str(s["total_pnl"])
+                s["max_drawdown"] = str(s["max_drawdown"])
+                del s["_peak"]
+            return stats
+
+    def get_daily_performance_history(self) -> list[dict]:
+        """일자별 전략 성과 히스토리."""
+        with Session(self._engine) as session:
+            dates = [r[0] for r in session.execute(
+                select(TradeRow.order_date).where(
+                    TradeRow.side == "sell",
+                    TradeRow.mock == self._mock,
+                ).group_by(TradeRow.order_date)
+                .order_by(TradeRow.order_date.desc())
+            ).all()]
+
+        result = []
+        cumulative_pnl = 0
+        for day_str in reversed(dates):
+            from datetime import datetime as dt
+            day = dt.strptime(day_str, "%Y%m%d").date()
+            perf = self.get_strategy_performance(day=day)
+            day_trades = 0
+            day_wins = 0
+            day_losses = 0
+            day_pnl = 0
+            for s in perf.values():
+                day_trades += s["trades"]
+                day_wins += s["wins"]
+                day_losses += s["losses"]
+                day_pnl += int(s["total_pnl"])
+            cumulative_pnl += day_pnl
+            result.append({
+                "date": f"{day_str[:4]}-{day_str[4:6]}-{day_str[6:]}",
+                "trades": day_trades,
+                "wins": day_wins,
+                "losses": day_losses,
+                "win_rate": round(day_wins / day_trades * 100, 1) if day_trades > 0 else 0.0,
+                "pnl": day_pnl,
+                "cumulative_pnl": cumulative_pnl,
+            })
+        result.reverse()
+        return result
 
     def save_position_open(
         self, symbol: str, strategy: str, opened_at: "datetime | None" = None,
@@ -345,6 +554,39 @@ class TradeRepository:
             ).all()
             return {r.symbol: r.opened_at for r in rows}
 
+    def get_position_strategies(self) -> dict[str, str]:
+        """보유 종목별 전략명 조회. positions 테이블 우선, 없으면 trades 최근 매수 건."""
+        with Session(self._engine) as session:
+            result: dict[str, str] = {}
+            pos_rows = session.scalars(
+                select(PositionRow).where(PositionRow.closed_at.is_(None))
+            ).all()
+            for r in pos_rows:
+                if r.strategy:
+                    result[r.symbol] = r.strategy
+
+            missing = session.scalars(
+                select(TradeRow.symbol).where(
+                    TradeRow.side == "buy",
+                    TradeRow.strategy != "",
+                    TradeRow.mock == self._mock,
+                ).group_by(TradeRow.symbol)
+            ).all()
+            for symbol in missing:
+                if symbol in result:
+                    continue
+                row = session.scalar(
+                    select(TradeRow.strategy).where(
+                        TradeRow.symbol == symbol,
+                        TradeRow.side == "buy",
+                        TradeRow.strategy != "",
+                        TradeRow.mock == self._mock,
+                    ).order_by(TradeRow.ord_time.desc()).limit(1)
+                )
+                if row:
+                    result[symbol] = row
+            return result
+
     def get_trades_today(self, day: date | None = None) -> list[dict]:
         day_str = (day or date.today()).strftime("%Y%m%d")
         with Session(self._engine) as session:
@@ -361,6 +603,8 @@ class TradeRepository:
                     "symbol": r.symbol,
                     "name": r.name,
                     "side": r.side,
+                    "strategy": r.strategy or "",
+                    "reason": getattr(r, "reason", "") or "",
                     "price": str(r.avg_price),
                     "quantity": r.tot_ccld_qty,
                     "ord_qty": r.ord_qty,

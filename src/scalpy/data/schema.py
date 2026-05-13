@@ -29,6 +29,8 @@ class TradeRow(Base):
     orgn_order_no: Mapped[str] = mapped_column(sa.String(30), default="")
     ord_dvsn_cd: Mapped[str] = mapped_column(sa.String(4), default="")
     cncl_yn: Mapped[str] = mapped_column(sa.String(1), default="")
+    strategy: Mapped[str] = mapped_column(sa.String(50), default="")
+    reason: Mapped[str] = mapped_column(sa.String(30), default="")
     fee: Mapped[int] = mapped_column(default=0)
     pnl: Mapped[int | None] = mapped_column(nullable=True)
     mock: Mapped[bool] = mapped_column(sa.Boolean, default=True, server_default=sa.text("true"))
@@ -70,20 +72,6 @@ class PositionRow(Base):
     )
 
 
-class StrategyTradeLog(Base):
-    __tablename__ = "strategy_trade_log"
-
-    id: Mapped[uuid.UUID] = mapped_column(
-        sa.Uuid, primary_key=True, default=uuid.uuid4
-    )
-    strategy: Mapped[str] = mapped_column(sa.String(50))
-    symbol: Mapped[str] = mapped_column(sa.String(20))
-    pnl: Mapped[float] = mapped_column(sa.Numeric(15, 2))
-    mock: Mapped[bool] = mapped_column(sa.Boolean, default=True, server_default=sa.text("true"))
-    closed_at: Mapped[sa.DateTime] = mapped_column(
-        sa.DateTime(timezone=True), server_default=sa.func.now()
-    )
-
 
 class OhlcvRow(Base):
     __tablename__ = "ohlcv"
@@ -112,6 +100,4 @@ sa.Index("idx_trades_symbol", TradeRow.symbol)
 sa.Index("idx_trades_order_date", TradeRow.order_date)
 sa.Index("idx_trades_side", TradeRow.side)
 sa.Index("idx_positions_symbol", PositionRow.symbol)
-sa.Index("idx_strategy_trade_log_strategy", StrategyTradeLog.strategy)
-sa.Index("idx_strategy_trade_log_mock", StrategyTradeLog.mock)
 sa.Index("idx_ohlcv_symbol_interval_dt", OhlcvRow.symbol, OhlcvRow.interval, OhlcvRow.dt)
