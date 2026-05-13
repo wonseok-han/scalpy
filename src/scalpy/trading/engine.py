@@ -347,7 +347,7 @@ class TradingEngine:
             if pos.strategy != "synced" and pos.strategy != signal.strategy:
                 return
             gain = (pos.current_price - pos.avg_price) / pos.avg_price if pos.avg_price > 0 else Decimal("0")
-            if gain < _MIN_PROFIT_RATIO:
+            if Decimal("0") <= gain < _MIN_PROFIT_RATIO:
                 return
             sell_pos = pos
             qty = pos.quantity

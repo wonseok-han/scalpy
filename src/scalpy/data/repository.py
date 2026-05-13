@@ -127,7 +127,7 @@ class TradeRepository:
         return commission
 
     def _recalc_pnl(self, session: Session, order_date: str) -> None:
-        """sync 완료 후 sell 건의 pnl을 FIFO 매칭으로 재계산."""
+        """sync 완료 후 sell 건의 pnl을 FIFO 매칭으로 재계산 (전체 기간 매수 대상)."""
         symbols = [r[0] for r in session.execute(
             select(TradeRow.symbol).where(
                 TradeRow.order_date == order_date,
@@ -140,17 +140,15 @@ class TradeRepository:
                 select(TradeRow).where(
                     TradeRow.symbol == symbol,
                     TradeRow.side == "buy",
-                    TradeRow.order_date == order_date,
                     TradeRow.mock == self._mock,
-                ).order_by(TradeRow.ord_time)
+                ).order_by(TradeRow.order_date, TradeRow.ord_time)
             ).all()
             sells = session.scalars(
                 select(TradeRow).where(
                     TradeRow.symbol == symbol,
                     TradeRow.side == "sell",
-                    TradeRow.order_date == order_date,
                     TradeRow.mock == self._mock,
-                ).order_by(TradeRow.ord_time)
+                ).order_by(TradeRow.order_date, TradeRow.ord_time)
             ).all()
 
             buy_queue: list[tuple[int, float]] = []
@@ -188,6 +186,72 @@ class TradeRepository:
                 sell.pnl = int((sell.avg_price - buy_avg) * matched_qty - sell.fee - buy_fee)
 
         session.commit()
+
+    def recalc_all_pnl(self) -> int:
+        """전체 종목의 pnl을 FIFO로 재계산. 반환값: 갱신된 sell 건수."""
+        with Session(self._engine) as session:
+            symbols = [r[0] for r in session.execute(
+                select(TradeRow.symbol).where(
+                    TradeRow.side == "sell",
+                    TradeRow.mock == self._mock,
+                ).group_by(TradeRow.symbol)
+            ).all()]
+
+            updated = 0
+            for symbol in symbols:
+                buys = session.scalars(
+                    select(TradeRow).where(
+                        TradeRow.symbol == symbol,
+                        TradeRow.side == "buy",
+                        TradeRow.mock == self._mock,
+                    ).order_by(TradeRow.order_date, TradeRow.ord_time)
+                ).all()
+                sells = session.scalars(
+                    select(TradeRow).where(
+                        TradeRow.symbol == symbol,
+                        TradeRow.side == "sell",
+                        TradeRow.mock == self._mock,
+                    ).order_by(TradeRow.order_date, TradeRow.ord_time)
+                ).all()
+
+                buy_queue: list[tuple[int, float]] = []
+                for b in buys:
+                    if b.tot_ccld_qty > 0 and b.avg_price > 0:
+                        buy_queue.append((b.tot_ccld_qty, float(b.avg_price)))
+
+                qi = 0
+                remaining = buy_queue[0][0] if buy_queue else 0
+
+                for sell in sells:
+                    if sell.avg_price == 0 or sell.tot_ccld_qty == 0:
+                        sell.pnl = None
+                        continue
+
+                    to_match = sell.tot_ccld_qty
+                    total_buy_cost = 0.0
+
+                    while to_match > 0 and qi < len(buy_queue):
+                        take = min(to_match, remaining)
+                        total_buy_cost += take * buy_queue[qi][1]
+                        to_match -= take
+                        remaining -= take
+                        if remaining <= 0:
+                            qi += 1
+                            remaining = buy_queue[qi][0] if qi < len(buy_queue) else 0
+
+                    if to_match > 0:
+                        sell.pnl = None
+                        continue
+
+                    matched_qty = sell.tot_ccld_qty
+                    buy_avg = total_buy_cost / matched_qty
+                    buy_fee = int(total_buy_cost * float(_COMMISSION_RATE))
+                    sell.pnl = int((sell.avg_price - buy_avg) * matched_qty - sell.fee - buy_fee)
+                    updated += 1
+
+            session.commit()
+            logger.info("recalc_all_pnl.done", symbols=len(symbols), updated=updated)
+            return updated
 
     def get_daily_pnl(self, day: date | None = None) -> int:
         day_str = (day or date.today()).strftime("%Y%m%d")
