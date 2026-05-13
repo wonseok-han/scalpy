@@ -35,7 +35,6 @@ _state: DashboardState | None = None
 _sse: SSEManager | None = None
 _bus: EventBus | None = None
 _engine_ref: Any = None
-_screener_ref: Any = None
 _stream_ref: Any = None
 _registry_ref: StrategyRegistry | None = None
 _trade_repo_ref: Any = None
@@ -55,17 +54,15 @@ def init_routes(
     sse: SSEManager,
     engine: Any,
     bus: EventBus | None = None,
-    screener: Any = None,
     stream: Any = None,
     registry: StrategyRegistry | None = None,
     trade_repo: Any = None,
 ) -> None:
-    global _state, _sse, _bus, _engine_ref, _screener_ref, _stream_ref, _registry_ref, _trade_repo_ref
+    global _state, _sse, _bus, _engine_ref, _stream_ref, _registry_ref, _trade_repo_ref
     _state = state
     _sse = sse
     _bus = bus
     _engine_ref = engine
-    _screener_ref = screener
     _stream_ref = stream
     _registry_ref = registry
     _trade_repo_ref = trade_repo
@@ -80,7 +77,7 @@ def init_routes(
         bus.subscribe("order.filled", _on_order_filled)
         bus.subscribe("engine.daily_init", _on_daily_init)
 
-    logger.info("routes.initialized", engine=engine is not None, screener=screener is not None, stream=stream is not None)
+    logger.info("routes.initialized", engine=engine is not None, stream=stream is not None)
 
 
 def _on_state_change(data: dict[str, Any]) -> None:
@@ -134,25 +131,6 @@ async def _daily_rescan(date: str) -> None:
             logger.info("routes.daily_rescan.quant_done", symbols=quant_symbols)
         except Exception as e:
             logger.error("routes.daily_rescan.quant_failed", error=str(e))
-
-    scalping_on = settings.get("strategies.scalping_enabled", [])
-    if scalping_on and _screener_ref and _engine_ref:
-        try:
-            held = [p.symbol for p in _engine_ref.positions.all()]
-            max_price = 0
-            try:
-                bal = await _engine_ref._broker.get_balance()
-                max_price = int(bal)
-            except Exception:
-                pass
-            symbols = await _screener_ref.scan(held_symbols=held, max_price=max_price)
-            if symbols:
-                if _stream_ref:
-                    await _stream_ref.update_subscriptions(list(set(symbols) | set(held)))
-                await _engine_ref.update_symbols(symbols)
-            logger.info("routes.daily_rescan.scalping_done", symbols=symbols)
-        except Exception as e:
-            logger.error("routes.daily_rescan.scalping_failed", error=str(e))
 
     if _sse:
         _sse.broadcast("state", _build_sse_state())
@@ -245,7 +223,6 @@ async def health() -> dict[str, Any]:
         "ok": True,
         "engine": _engine_ref is not None,
         "bus": _bus is not None,
-        "screener": _screener_ref is not None,
         "stream": _stream_ref is not None,
         "trading_started": _trading_started,
     }
@@ -255,8 +232,8 @@ async def health() -> dict[str, Any]:
 async def get_status() -> dict[str, Any]:
     """엔진 상태 — 캐시 데이터만, 즉시 반환."""
     mock = settings.get("mock", True)
-    strategy_names = {s.name: s.display_name for s in _registry_ref.all() if s.name in _SCALPING_STRATEGIES} if _registry_ref else {}
-    strategy_enabled = {s.name: s.enabled for s in _registry_ref.all() if s.name in _SCALPING_STRATEGIES} if _registry_ref else {}
+    strategy_names = {s.name: s.display_name for s in _registry_ref.all()} if _registry_ref else {}
+    strategy_enabled = {s.name: s.enabled for s in _registry_ref.all()} if _registry_ref else {}
     pos_count = len(_engine_ref.positions.all()) if _engine_ref else 0
     daily_pnl = "0"
     total_fees = "0"
@@ -436,20 +413,15 @@ async def cancel_all_orders() -> dict[str, Any]:
         return {"success": False, "error": str(e)}
 
 
-_SCALPING_STRATEGIES = {"ma_cross", "bollinger", "rsi", "orderbook", "vwap"}
 _QUANT_STRATEGIES = {"momentum", "mean_reversion", "factor"}
 
 
 def _apply_strategies() -> None:
     if not _registry_ref:
         return
-    scalping_on = set(settings.get("strategies.scalping_enabled", []))
     quant_on = set(settings.get("strategies.quant_enabled", []))
     for s in _registry_ref.all():
-        if s.name in _SCALPING_STRATEGIES:
-            s.enabled = s.name in scalping_on
-        elif s.name in _QUANT_STRATEGIES:
-            s.enabled = s.name in quant_on
+        s.enabled = s.name in quant_on
     logger.info("dashboard.strategies_applied", enabled=[s.name for s in _registry_ref.enabled()])
 
 
@@ -640,7 +612,6 @@ async def start_engine() -> dict[str, Any]:
         _engine_ref.start_background_loops()
 
         _apply_strategies()
-        scalping_on = settings.get("strategies.scalping_enabled", [])
         quant_on = settings.get("strategies.quant_enabled", [])
 
         symbols: list[str] = []
@@ -648,20 +619,6 @@ async def start_engine() -> dict[str, Any]:
         if quant_on:
             quant_symbols = await _quant_start()
             symbols.extend(quant_symbols)
-
-        if scalping_on and _screener_ref:
-            held = [p.symbol for p in _engine_ref.positions.all()]
-            scalp_max_price = 0
-            try:
-                bal = await _engine_ref._broker.get_balance()
-                scalp_max_price = int(bal)
-            except Exception:
-                pass
-            scanned = await _screener_ref.scan(held_symbols=held, max_price=scalp_max_price)
-            if scanned:
-                symbols.extend(s for s in scanned if s not in symbols)
-            if _bus:
-                await _bus.emit("screening.completed", {"symbols": scanned or [], "names": _screener_ref.symbol_names})
 
         if not symbols:
             symbols = list(settings.get("trading.symbols", ["005930"]))
@@ -713,26 +670,16 @@ async def stop_engine() -> dict[str, Any]:
 
 @router.post("/actions/rescan")
 async def rescan() -> dict[str, Any]:
-    if _screener_ref is None:
-        return {"success": False, "error": "screener not available"}
+    if not _trading_started:
+        return {"success": False, "error": "trading not started"}
     try:
-        held = [p.symbol for p in _engine_ref.positions.all()] if _engine_ref else []
-        rescan_max_price = 0
-        if _engine_ref:
-            try:
-                bal = await _engine_ref._broker.get_balance()
-                rescan_max_price = int(bal)
-            except Exception:
-                pass
-        symbols = await _screener_ref.scan(held_symbols=held, max_price=rescan_max_price)
-        if _stream_ref and symbols:
-            sub_symbols = list(set(symbols) | set(held))
-            await _stream_ref.update_subscriptions(sub_symbols)
-        if _engine_ref and symbols:
-            await _engine_ref.update_symbols(symbols)
-        if _bus and symbols:
-            await _bus.emit("screening.completed", {"symbols": symbols, "names": _screener_ref.symbol_names})
-        return {"success": True, "symbols": symbols}
+        quant_symbols = await _quant_start()
+        if quant_symbols and _stream_ref:
+            held = [p.symbol for p in _engine_ref.positions.all()] if _engine_ref else []
+            await _stream_ref.update_subscriptions(list(set(quant_symbols) | set(held)))
+        if _engine_ref and quant_symbols:
+            await _engine_ref.update_symbols(quant_symbols)
+        return {"success": True, "symbols": quant_symbols}
     except Exception as e:
         return {"success": False, "error": str(e)}
 
@@ -745,9 +692,7 @@ async def toggle_strategy(name: str) -> dict[str, Any]:
     result = _registry_ref.toggle(name)
     if result is None:
         return {"success": False, "error": "strategy not found"}
-    scalping_on = [s.name for s in _registry_ref.all() if s.enabled and s.name in _SCALPING_STRATEGIES]
     quant_on = [s.name for s in _registry_ref.all() if s.enabled and s.name in _QUANT_STRATEGIES]
-    settings.set("strategies.scalping_enabled", scalping_on)
     settings.set("strategies.quant_enabled", quant_on)
     if _sse:
         _sse.broadcast("state", _build_sse_state())
@@ -877,7 +822,6 @@ async def quant_config() -> dict[str, Any]:
 async def get_settings() -> dict[str, Any]:
     trading = settings.get("trading", {})
     quant = settings.get("quant", {})
-    screening = settings.get("screening", {})
     risk = {}
     if _engine_ref:
         r = _engine_ref._risk
@@ -908,7 +852,6 @@ async def get_settings() -> dict[str, Any]:
     return {
         "trading": dict(trading),
         "quant": dict(quant),
-        "screening": dict(screening),
         "risk": risk,
         "strategies": strats,
     }
@@ -930,12 +873,6 @@ async def update_settings(body: dict[str, Any]) -> dict[str, Any]:
         for k, v in q.items():
             settings.set(f"quant.{k}", v)
         applied.append("quant")
-
-    if "screening" in body:
-        sc = body["screening"]
-        for k, v in sc.items():
-            settings.set(f"screening.{k}", v)
-        applied.append("screening")
 
     if "risk" in body and _engine_ref:
         r = body["risk"]
@@ -966,9 +903,7 @@ async def update_settings(body: dict[str, Any]) -> dict[str, Any]:
             params = cfg.get("params", {})
             if params:
                 s.configure(params)
-        scalping_on = [s.name for s in _registry_ref.all() if s.enabled and s.name in _SCALPING_STRATEGIES]
         quant_on = [s.name for s in _registry_ref.all() if s.enabled and s.name in _QUANT_STRATEGIES]
-        settings.set("strategies.scalping_enabled", scalping_on)
         settings.set("strategies.quant_enabled", quant_on)
         applied.append("strategies")
 
@@ -1001,14 +936,6 @@ async def persist_settings() -> dict[str, Any]:
         if v is not None:
             trading[k] = v
 
-    # screening
-    screening = d.setdefault("screening", {})
-    for k in ("enabled", "max_stocks", "min_change_rate", "max_change_rate",
-              "min_change_rate_lower", "min_volume", "interval_minutes"):
-        v = settings.get(f"screening.{k}")
-        if v is not None:
-            screening[k] = v
-
     # quant
     quant = d.setdefault("quant", {})
     for k in ("max_stocks", "momentum_days", "min_avg_volume",
@@ -1031,9 +958,7 @@ async def persist_settings() -> dict[str, Any]:
     # strategy enabled lists + params
     if _registry_ref:
         strats = d.setdefault("strategies", {})
-        scalping_on = [s.name for s in _registry_ref.all() if s.enabled and s.name in _SCALPING_STRATEGIES]
         quant_on = [s.name for s in _registry_ref.all() if s.enabled and s.name in _QUANT_STRATEGIES]
-        strats["scalping_enabled"] = scalping_on
         strats["quant_enabled"] = quant_on
         if "enabled" in strats:
             del strats["enabled"]

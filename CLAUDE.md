@@ -1,6 +1,6 @@
-# Scalpy
+# Scalpy Quant
 
-> 한국투자증권 Open API 기반 자동 스캘핑 트레이딩 봇.
+> 한국투자증권 Open API 기반 단기 퀀트 자동매매 봇.
 
 ---
 

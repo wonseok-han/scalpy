@@ -5,8 +5,8 @@ import pytest
 from scalpy.broker.mock import MockBroker
 from scalpy.core.enums import OrderType, Side
 from scalpy.core.models import Order
+from scalpy.strategy.factor import FactorStrategy
 from scalpy.strategy.registry import StrategyRegistry
-from scalpy.strategy.rsi import RSIStrategy
 from scalpy.trading.risk import RiskManager
 
 
@@ -18,7 +18,7 @@ def mock_broker() -> MockBroker:
 @pytest.fixture
 def strategy_registry() -> StrategyRegistry:
     registry = StrategyRegistry()
-    registry.register(RSIStrategy())
+    registry.register(FactorStrategy())
     return registry
 
 
@@ -35,5 +35,5 @@ def sample_buy_order() -> Order:
         order_type=OrderType.MARKET,
         price=Decimal("72000"),
         quantity=10,
-        strategy="rsi",
+        strategy="factor",
     )

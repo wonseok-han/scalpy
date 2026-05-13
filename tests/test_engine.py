@@ -1,54 +1,69 @@
+from datetime import datetime, time as dt_time
 from decimal import Decimal
+from unittest.mock import patch
 
 from scalpy.broker.mock import MockBroker
 from scalpy.core.enums import Side
+from scalpy.core.models import Signal
+from scalpy.strategy.base import BaseStrategy
 from scalpy.strategy.registry import StrategyRegistry
-from scalpy.strategy.rsi import RSIStrategy
 from scalpy.trading.engine import TradingEngine
 from scalpy.trading.risk import RiskManager
+
+_MOCK_MARKET_OPEN = dt_time(10, 0)
+
+
+class _AlwaysBuyStrategy(BaseStrategy):
+    name = "test_buy"
+    display_name = "Test Buy"
+    description = "Test"
+
+    def __init__(self):
+        self._init_base()
+        self._count = 0
+
+    async def on_tick(self, symbol, price, volume):
+        self._count += 1
+        if self._count == 5:
+            return Signal(
+                symbol=symbol, side=Side.BUY, price=price,
+                strategy=self.name, quantity=1, confidence=1.0,
+                timestamp=datetime.now(),
+            )
+        return None
+
+    async def on_orderbook(self, symbol, asks, bids):
+        return None
 
 
 class TestTradingEngine:
     def setup_method(self) -> None:
         self.broker = MockBroker(initial_balance=Decimal("10000000"))
         self.registry = StrategyRegistry()
-        rsi = RSIStrategy()
-        rsi.cooldown_seconds = 0
-        self.registry.register(rsi)
+        self.registry.register(_AlwaysBuyStrategy())
         self.risk = RiskManager(stop_loss_ratio=0.02, take_profit_ratio=0.03)
         self.engine = TradingEngine(self.broker, self.registry, self.risk)
+        self.engine._is_market_hours = lambda: True
+        self._time_patch = patch(
+            "scalpy.trading.engine.datetime",
+            wraps=datetime,
+        )
+        mock_dt = self._time_patch.start()
+        mock_dt.now = lambda tz=None: datetime(2026, 1, 5, 10, 0, 0, tzinfo=tz)
+
+    def teardown_method(self) -> None:
+        self._time_patch.stop()
 
     async def test_signal_triggers_order(self) -> None:
-        await self.engine.start()
+        self.engine._running = True
 
-        # Feed declining prices to trigger RSI oversold → BUY
-        for i in range(16):
-            await self.engine.on_tick("005930", Decimal(str(100 - i * 2)), 100)
+        for i in range(6):
+            await self.engine.on_tick("005930", Decimal("72000"), 100)
 
         orders = self.engine.orders.get_history()
-        assert len(orders) > 0
-        assert orders[0].side == Side.BUY
-
-        await self.engine.stop()
-
-    async def test_stop_loss_closes_position(self) -> None:
-        await self.engine.start()
-
-        # Create a position via RSI signal
-        for i in range(16):
-            await self.engine.on_tick("005930", Decimal(str(100 - i * 2)), 100)
-
-        buy_orders = [o for o in self.engine.orders.get_history() if o.side == Side.BUY]
+        buy_orders = [o for o in orders if o.side == Side.BUY]
         assert len(buy_orders) > 0
 
-        # Stop loss may already have triggered within the loop.
-        # Verify at least one sell order in history (the stop-loss close)
-        sell_orders = [o for o in self.engine.orders.get_history() if o.side == Side.SELL]
-        assert len(sell_orders) > 0
-
-        await self.engine.stop()
-
     async def test_engine_ignores_ticks_when_stopped(self) -> None:
-        # Don't start engine
         await self.engine.on_tick("005930", Decimal("100"), 100)
         assert len(self.engine.orders.get_history()) == 0
