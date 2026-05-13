@@ -7,7 +7,7 @@ from scalpy.data.ohlcv import OhlcvRepository
 
 logger = structlog.get_logger()
 
-_EXCLUDE_DEPT = {"SPAC(소속부없음)", "관리종목(소속부없음)", "투자주의환기종목(소속부없음)"}
+_WARN_KEYWORDS = ("SPAC", "관리종목", "투자주의", "투자경고", "투자위험", "거래정지")
 
 
 def scan_market_universe(
@@ -22,7 +22,7 @@ def scan_market_universe(
     df = fdr.StockListing("KRX")
     df = df[df["Market"].isin(["KOSPI", "KOSDAQ"])]
     if "Dept" in df.columns:
-        df = df[~df["Dept"].isin(_EXCLUDE_DEPT)]
+        df = df[~df["Dept"].str.contains("|".join(_WARN_KEYWORDS), na=False)]
     df = df[df["Volume"] >= min_volume]
     df = df[df["ChagesRatio"] >= min_change_rate]
     if min_amount > 0:

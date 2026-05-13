@@ -18,10 +18,10 @@ def _fetch_market_stocks() -> list[dict[str, Any]]:
     df = df[df["Market"].isin(["KOSPI", "KOSDAQ"])]
     # 우선주 제외
     df = df[df["Code"].str[-1] == "0"]
-    # SPAC/관리종목 제외
-    exclude_dept = {"SPAC(소속부없음)", "관리종목(소속부없음)", "투자주의환기종목(소속부없음)"}
+    # SPAC/관리종목/투자경고 제외
+    _WARN_KEYWORDS = ("SPAC", "관리종목", "투자주의", "투자경고", "투자위험", "거래정지")
     if "Dept" in df.columns:
-        df = df[~df["Dept"].isin(exclude_dept)]
+        df = df[~df["Dept"].str.contains("|".join(_WARN_KEYWORDS), na=False)]
 
     stocks = []
     for _, row in df.iterrows():

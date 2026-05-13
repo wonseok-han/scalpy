@@ -27,6 +27,7 @@ _MIN_CONFIDENCE = 0.5
 _REJECTED_COOLDOWN = 60
 _CLOSE_COOLDOWN = 1800
 _SPLIT_SELL_DELAY = 1.0
+_UNFILLED_CANCEL_INTERVAL = 60
 _MIN_PROFIT_RATIO = Decimal("0.005")
 _KST = zoneinfo.ZoneInfo("Asia/Seoul")
 _CUTOFF_BUY = dt_time(15, 15)
@@ -61,6 +62,7 @@ class TradingEngine:
         self._performance = PerformanceTracker()
         self._trade_repo: Any = None
         self._pending_buy_cost: Decimal = Decimal("0")
+        self._last_unfilled_cancel: float = 0
 
     def set_trade_repo(self, repo: Any) -> None:
         self._trade_repo = repo
@@ -182,6 +184,12 @@ class TradingEngine:
                 break
             try:
                 await self.sync_positions()
+                now = time.monotonic()
+                if now - self._last_unfilled_cancel >= _UNFILLED_CANCEL_INTERVAL:
+                    cancelled = await self._broker.cancel_all_orders()
+                    if cancelled > 0:
+                        logger.info("engine.unfilled_cancelled", count=cancelled)
+                    self._last_unfilled_cancel = now
                 if self._bus:
                     await self._bus.emit("position.updated", {})
             except Exception as e:
