@@ -84,12 +84,14 @@ async def _trade_sync_loop(
     broker: "BaseBroker",
     trade_repo: "TradeRepository",
     stop_event: asyncio.Event,
+    engine: "TradingEngine | None" = None,
 ) -> None:
     while not stop_event.is_set():
         try:
             trades = await broker.get_trade_history()
             if trades:
-                count = trade_repo.sync_trades(trades)
+                reasons = getattr(engine, "_trade_reasons", {}) if engine else {}
+                count = trade_repo.sync_trades(trades, reason_map=reasons)
                 if count:
                     logger.info("trade_sync.new_trades", count=count)
         except Exception as e:
@@ -403,7 +405,7 @@ async def run() -> None:
         logger.info("scalpy.telegram_enabled")
 
     if trade_repo:
-        asyncio.create_task(_trade_sync_loop(broker, trade_repo, stop_event))
+        asyncio.create_task(_trade_sync_loop(broker, trade_repo, stop_event, engine))
         logger.info("scalpy.trade_sync_started", interval=_TRADE_SYNC_INTERVAL)
 
     if auto_start:

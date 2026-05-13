@@ -40,6 +40,9 @@ _registry_ref: StrategyRegistry | None = None
 _trade_repo_ref: Any = None
 _trading_started: bool = False
 _quant_rescan_task: asyncio.Task[None] | None = None
+_perf_cache: dict[str, dict] = {}
+_perf_sync_task: asyncio.Task[None] | None = None
+_PERF_SYNC_INTERVAL = 120
 
 _SSE_EVENTS = [
     "tick.received", "order.filled", "signal.generated",
@@ -71,6 +74,10 @@ def init_routes(
         engine.set_trade_repo(trade_repo)
         engine._performance.set_repo(trade_repo)
 
+    global _perf_sync_task
+    if trade_repo and _perf_sync_task is None:
+        _perf_sync_task = asyncio.create_task(_perf_sync_loop())
+
     if bus:
         for event in _SSE_EVENTS:
             bus.subscribe(event, _on_state_change)
@@ -99,15 +106,21 @@ def _on_daily_init(data: dict[str, Any]) -> None:
 
 
 async def _sync_trades_now() -> None:
+    global _perf_cache
     try:
         broker = _engine_ref._broker
         broker._last_ccld_first_page = -1
         trades = await broker.get_trade_history()
         if trades:
-            _trade_repo_ref.sync_trades(trades)
+            reasons = getattr(_engine_ref, "_trade_reasons", {})
+            _trade_repo_ref.sync_trades(trades, reason_map=reasons)
         await _refresh_pnl_cache()
+        if _trade_repo_ref:
+            _perf_cache = _trade_repo_ref.get_strategy_performance()
         if _sse:
             _sse.broadcast("state", _build_sse_state())
+            if _perf_cache:
+                _sse.broadcast("performance", _perf_cache)
     except Exception as e:
         logger.error("routes.trade_sync_failed", error=str(e))
 
@@ -135,6 +148,20 @@ async def _daily_rescan(date: str) -> None:
     if _sse:
         _sse.broadcast("state", _build_sse_state())
     logger.info("routes.daily_rescan_done", date=date)
+
+
+async def _perf_sync_loop() -> None:
+    """주기적으로 전략 성과를 DB에서 계산하여 캐시."""
+    global _perf_cache
+    while True:
+        await asyncio.sleep(_PERF_SYNC_INTERVAL)
+        try:
+            if _trade_repo_ref:
+                _perf_cache = _trade_repo_ref.get_strategy_performance()
+                if _sse:
+                    _sse.broadcast("performance", _perf_cache)
+        except Exception as e:
+            logger.warning("routes.perf_sync_failed", error=str(e))
 
 
 async def _refresh_pnl_cache() -> None:
@@ -814,11 +841,15 @@ async def quant_scan(refresh: bool = False) -> dict[str, Any]:
 
 @router.get("/performance")
 async def performance() -> dict[str, Any]:
+    global _perf_cache
     if not _engine_ref:
         return {"data": {}}
+    if _perf_cache:
+        return {"data": _perf_cache}
     if _trade_repo_ref:
         try:
-            return {"data": _trade_repo_ref.get_strategy_performance()}
+            _perf_cache = _trade_repo_ref.get_strategy_performance()
+            return {"data": _perf_cache}
         except Exception:
             pass
     return {"data": _engine_ref._performance.all_stats()}

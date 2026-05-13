@@ -30,6 +30,7 @@ class TradeRow(Base):
     ord_dvsn_cd: Mapped[str] = mapped_column(sa.String(4), default="")
     cncl_yn: Mapped[str] = mapped_column(sa.String(1), default="")
     strategy: Mapped[str] = mapped_column(sa.String(50), default="")
+    reason: Mapped[str] = mapped_column(sa.String(30), default="")
     fee: Mapped[int] = mapped_column(default=0)
     pnl: Mapped[int | None] = mapped_column(nullable=True)
     mock: Mapped[bool] = mapped_column(sa.Boolean, default=True, server_default=sa.text("true"))

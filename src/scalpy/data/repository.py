@@ -37,15 +37,20 @@ class TradeRepository:
                 conn.execute(text("UPDATE trades SET strategy = 'factor' WHERE strategy = '' OR strategy IS NULL"))
                 conn.execute(text("UPDATE positions SET strategy = 'factor' WHERE strategy = 'synced' OR strategy = ''"))
             logger.info("migration.added_strategy_column")
+        if "reason" not in columns:
+            with self._engine.begin() as conn:
+                conn.execute(text("ALTER TABLE trades ADD COLUMN reason VARCHAR(30) DEFAULT ''"))
+            logger.info("migration.added_reason_column")
 
     def recreate_trades_table(self) -> None:
         TradeRow.__table__.drop(self._engine, checkfirst=True)
         TradeRow.__table__.create(self._engine, checkfirst=True)
 
-    def sync_trades(self, trades: list[dict]) -> int:
+    def sync_trades(self, trades: list[dict], reason_map: dict[str, str] | None = None) -> int:
         """ccld API 데이터를 DB에 upsert. (order_no, order_date) 기준."""
         if not trades:
             return 0
+        reasons = reason_map or {}
 
         new_count = 0
         update_count = 0
@@ -93,12 +98,16 @@ class TradeRepository:
 
                 if prev_qty is None:
                     symbol = t.get("symbol", "")
+                    side_val = t.get("side", "")
+                    reason = reasons.get(symbol, "")
+                    if not reason:
+                        reason = "signal" if side_val in ("buy", "sell") else ""
                     row = TradeRow(
                         order_no=order_no,
                         order_date=order_date,
                         symbol=symbol,
                         name=t.get("name", ""),
-                        side=t.get("side", ""),
+                        side=side_val,
                         ord_qty=t.get("ord_qty", 0),
                         ord_price=t.get("ord_price", 0),
                         ord_time=t.get("ord_time", ""),
@@ -110,6 +119,7 @@ class TradeRepository:
                         ord_dvsn_cd=t.get("ord_dvsn_cd", ""),
                         cncl_yn=t.get("cncl_yn", ""),
                         strategy=strat_map.get(symbol, ""),
+                        reason=reason,
                         fee=fee,
                         mock=self._mock,
                     )
@@ -499,6 +509,7 @@ class TradeRepository:
                     "name": r.name,
                     "side": r.side,
                     "strategy": r.strategy or "",
+                    "reason": getattr(r, "reason", "") or "",
                     "price": str(r.avg_price),
                     "quantity": r.tot_ccld_qty,
                     "ord_qty": r.ord_qty,

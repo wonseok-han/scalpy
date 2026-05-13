@@ -274,8 +274,9 @@
             <th class="text-right">체결가</th>
             <th class="text-right">수수료</th>
             <th class="text-right">손익</th>
+            <th>사유</th>
           </tr></thead>
-          <tbody id="trade-table"><tr><td colspan="7" class="empty-row">거래 없음</td></tr></tbody>
+          <tbody id="trade-table"><tr><td colspan="8" class="empty-row">거래 없음</td></tr></tbody>
         </table>
       </div>
       <div id="trade-pager" style="display:none;padding:8px 12px;border-top:1px solid var(--border);justify-content:center;align-items:center;gap:4px;font-size:0.8rem;color:var(--text-secondary)">
@@ -503,7 +504,7 @@ function updatePositions(list){
 function renderTradePage(){
   const tb=document.getElementById('trade-table');
   const pager=document.getElementById('trade-pager');
-  if(!_allTrades.length){tb.innerHTML='<tr><td class="empty-row" colspan="7">거래 없음</td></tr>';pager.style.display='none';return;}
+  if(!_allTrades.length){tb.innerHTML='<tr><td class="empty-row" colspan="8">거래 없음</td></tr>';pager.style.display='none';return;}
   const total=_allTrades.length,maxPage=Math.ceil(total/_tradePageSize)-1;
   const start=_tradePage*_tradePageSize;
   const items=_allTrades.slice(start,start+_tradePageSize);
@@ -511,6 +512,8 @@ function renderTradePage(){
     const pnl=t.pnl?Number(t.pnl):null;
     const pct=t.pnl_pct!==''&&t.pnl_pct!==undefined?Number(t.pnl_pct):null;
     const pnlStr=pnl!==null?`<span class="${pnl>=0?'text-profit':'text-loss'}">${pnlSign(pnl)}원${pct!==null?' ('+(pct>0?'+':'')+pct.toFixed(2)+'%)':''}</span>`:'';
+    const reasonMap={signal:'전략',stop_loss:'손절',trailing_stop:'트레일링',stagnation:'정체',market_close:'장마감'};
+    const reasonLabel=reasonMap[t.reason]||t.reason||'';
     return `<tr>
       <td>${t.time}</td>
       <td><span class="side-tag ${t.side==='buy'?'buy':'sell'}">${t.side==='buy'?'BUY':'SELL'}</span></td>
@@ -519,6 +522,7 @@ function renderTradePage(){
       <td class="text-right">${fmt(t.price)}</td>
       <td class="text-right">${t.fee?fmt(t.fee)+'원':''}</td>
       <td class="text-right">${pnlStr}</td>
+      <td>${reasonLabel}</td>
     </tr>`;
   }).join('');
   if(total>_tradePageSize){
@@ -626,14 +630,17 @@ function _restoreScan(){
 }
 
 // ── Performance ──
-async function loadPerf(){
+function renderPerf(stats){
   const tb=document.getElementById('perf-table');
+  const keys=Object.keys(stats);
+  if(!keys.length){tb.innerHTML='<tr><td colspan="7" class="empty-row">데이터 없음</td></tr>';return;}
+  tb.innerHTML=keys.map(k=>{const s=stats[k];const pnl=Number(s.total_pnl);const ap=s.avg_pnl_pct!=null?Number(s.avg_pnl_pct):null;return `<tr><td>${k}</td><td class="text-right">${s.trades}</td><td class="text-right">${s.wins}/${s.losses}</td><td class="text-right">${s.win_rate}%</td><td class="text-right ${pnl>=0?'text-profit':'text-loss'}">${pnlSign(pnl)}원</td><td class="text-right ${ap!==null?(ap>=0?'text-profit':'text-loss'):''}">${ap!==null?(ap>0?'+':'')+ap.toFixed(2)+'%':'-'}</td><td class="text-right text-loss">${fmt(s.max_drawdown)}원</td></tr>`;}).join('');
+}
+async function loadPerf(){
   try{
     const d=await fetch('/api/performance').then(r=>r.json());
-    const stats=d.data||{};const keys=Object.keys(stats);
-    if(!keys.length){tb.innerHTML='<tr><td colspan="7" class="empty-row">데이터 없음</td></tr>';return;}
-    tb.innerHTML=keys.map(k=>{const s=stats[k];const pnl=Number(s.total_pnl);const ap=s.avg_pnl_pct!=null?Number(s.avg_pnl_pct):null;return `<tr><td>${k}</td><td class="text-right">${s.trades}</td><td class="text-right">${s.wins}/${s.losses}</td><td class="text-right">${s.win_rate}%</td><td class="text-right ${pnl>=0?'text-profit':'text-loss'}">${pnlSign(pnl)}원</td><td class="text-right ${ap!==null?(ap>=0?'text-profit':'text-loss'):''}">${ap!==null?(ap>0?'+':'')+ap.toFixed(2)+'%':'-'}</td><td class="text-right text-loss">${fmt(s.max_drawdown)}원</td></tr>`;}).join('');
-  }catch(e){tb.innerHTML='<tr><td colspan="7" class="empty-row">오류</td></tr>';}
+    renderPerf(d.data||{});
+  }catch(e){document.getElementById('perf-table').innerHTML='<tr><td colspan="7" class="empty-row">오류</td></tr>';}
 }
 
 // ── OHLCV Fetch ──
@@ -715,6 +722,7 @@ async function loadInitial(){
 const badge=document.getElementById('conn-badge');
 const es=new EventSource('/api/events');
 es.addEventListener('state',e=>{try{applySseState(JSON.parse(e.data))}catch(err){console.error(err)}});
+es.addEventListener('performance',e=>{try{renderPerf(JSON.parse(e.data))}catch(err){console.error(err)}});
 es.onopen=()=>{badge.textContent='LIVE';badge.className='conn-badge conn-live';};
 es.onerror=()=>{badge.textContent='OFFLINE';badge.className='conn-badge conn-off';document.getElementById('engine-status').innerHTML='<span class="pulse-dot off"></span> 연결 끊김';};
 

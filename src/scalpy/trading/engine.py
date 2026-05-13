@@ -66,6 +66,7 @@ class TradingEngine:
         self._pending_buy_cost: Decimal = Decimal("0")
         self._last_unfilled_cancel: float = 0
         self._last_daily_init: str = ""
+        self._trade_reasons: dict[str, str] = {}
 
     def set_trade_repo(self, repo: Any) -> None:
         self._trade_repo = repo
@@ -447,6 +448,7 @@ class TradingEngine:
                     },
                 )
                 if result.side == Side.BUY:
+                    self._trade_reasons[result.symbol] = "signal"
                     if self._trade_repo:
                         try:
                             self._trade_repo.save_position_open(result.symbol, result.strategy)
@@ -471,6 +473,7 @@ class TradingEngine:
                             self._trade_repo.close_position(result.symbol)
                         except Exception:
                             pass
+                    self._trade_reasons[result.symbol] = "signal"
                     await self._bus.emit(
                         "position.closed",
                         {
@@ -595,6 +598,7 @@ class TradingEngine:
 
         if total_sold > 0:
             self._closed_symbols[pos.symbol] = time.monotonic()
+            self._trade_reasons[pos.symbol] = reason
             self._performance.record_trade(pos.strategy, total_pnl, symbol=pos.symbol)
             if self._trade_repo:
                 try:
