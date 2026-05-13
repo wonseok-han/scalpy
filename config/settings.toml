@@ -37,8 +37,13 @@ max_open_positions = 3
 market_close_liquidate = false
 # 손절 비율 (0.003 = 0.3%, 평균단가 대비 하락 시 자동 청산)
 stop_loss_ratio = 0.02
-# 익절 비율 (0.015 = 1.5%, 평균단가 대비 상승 시 자동 청산)
+# 익절 비율 (trailing stop 사용 시 비상 상한으로만 동작)
 take_profit_ratio = 0.03
+# Trailing Stop: 고점 추적 매도
+# 활성화 기준 (0.01 = 1%, 매수가 대비 이 이상 수익 시 고점 추적 시작)
+trailing_activate_ratio = 0.01
+# 매도 기준 (0.02 = 2%, 고점 대비 이 이상 하락 시 매도)
+trailing_stop_ratio = 0.02
 # 강제 청산 분할 매도 횟수 (1 = 전량 일괄, 3 = 3분할 매도, 슬리피지 방지)
 force_close_splits = 3
 # 횡보 청산: N시간 보유 후 수익률이 ±threshold 이내이면 자동 청산 (0 = 비활성화)
@@ -167,15 +172,15 @@ take_profit_ratio = 0.04
 
 [default.strategies.factor]
 # 팩터 관측 윈도우
-lookback = 30
+lookback = 60
 # 팩터 점수 임계값 (0~1, 높을수록 보수적)
-buy_threshold = 0.55
-sell_threshold = 0.55
+buy_threshold = 0.65
+sell_threshold = 0.70
 # 팩터 가중치 (합계 1.0)
 weight_momentum = 0.4
-weight_volume = 0.2
+weight_volume = 0.3
 weight_orderbook = 0.3
-cooldown_seconds = 600
+cooldown_seconds = 1800
 # 복합 팩터 — 가장 넓은 손절/익절
 stop_loss_ratio = 0.025
 take_profit_ratio = 0.04

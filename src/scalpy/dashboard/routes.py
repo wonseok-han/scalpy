@@ -887,6 +887,8 @@ async def get_settings() -> dict[str, Any]:
             "max_position_size": r.max_position_size,
             "max_open_positions": r.max_open_positions,
             "max_position_ratio": r.max_position_ratio,
+            "trailing_activate_ratio": float(r.trailing_activate_ratio),
+            "trailing_stop_ratio": float(r.trailing_stop_ratio),
         }
     strats = {}
     if _registry_ref:
@@ -948,6 +950,10 @@ async def update_settings(body: dict[str, Any]) -> dict[str, Any]:
             rm.max_open_positions = int(r["max_open_positions"])
         if r.get("max_position_ratio") is not None:
             rm.max_position_ratio = float(r["max_position_ratio"])
+        if r.get("trailing_activate_ratio") is not None:
+            rm.trailing_activate_ratio = Decimal(str(r["trailing_activate_ratio"]))
+        if r.get("trailing_stop_ratio") is not None:
+            rm.trailing_stop_ratio = Decimal(str(r["trailing_stop_ratio"]))
         applied.append("risk")
 
     if "strategies" in body and _registry_ref:
@@ -989,7 +995,8 @@ async def persist_settings() -> dict[str, Any]:
     trading = d.setdefault("trading", {})
     for k in ("auto_start", "symbols", "max_position_size",
               "max_position_ratio", "max_open_positions",
-              "stop_loss_ratio", "take_profit_ratio"):
+              "stop_loss_ratio", "take_profit_ratio",
+              "trailing_activate_ratio", "trailing_stop_ratio"):
         v = settings.get(f"trading.{k}")
         if v is not None:
             trading[k] = v
@@ -1018,6 +1025,8 @@ async def persist_settings() -> dict[str, Any]:
         trading["max_position_size"] = rm.max_position_size
         trading["max_open_positions"] = rm.max_open_positions
         trading["max_position_ratio"] = rm.max_position_ratio
+        trading["trailing_activate_ratio"] = float(rm.trailing_activate_ratio)
+        trading["trailing_stop_ratio"] = float(rm.trailing_stop_ratio)
 
     # strategy enabled lists + params
     if _registry_ref:

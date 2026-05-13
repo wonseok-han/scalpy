@@ -18,9 +18,13 @@ class RiskManager:
         max_position_ratio: float = 0.3,
         stagnation_hours: float = 0,
         stagnation_threshold: float = 0.005,
+        trailing_activate_ratio: float = 0.01,
+        trailing_stop_ratio: float = 0.01,
     ) -> None:
         self.stop_loss_ratio = Decimal(str(stop_loss_ratio))
         self.take_profit_ratio = Decimal(str(take_profit_ratio))
+        self.trailing_activate_ratio = Decimal(str(trailing_activate_ratio))
+        self.trailing_stop_ratio = Decimal(str(trailing_stop_ratio))
         self.max_position_size = max_position_size
         self.max_open_positions = max_open_positions
         self.max_position_ratio = max_position_ratio
@@ -52,6 +56,29 @@ class RiskManager:
                 "risk.take_profit_triggered",
                 symbol=position.symbol,
                 gain_ratio=str(gain_ratio),
+            )
+        return triggered
+
+    def is_trailing_active(self, position: Position) -> bool:
+        if position.quantity == 0 or position.avg_price <= 0:
+            return False
+        gain = (position.current_price - position.avg_price) / position.avg_price
+        return gain >= self.trailing_activate_ratio
+
+    def check_trailing_stop(self, position: Position) -> bool:
+        if position.quantity == 0 or position.peak_price <= 0:
+            return False
+        if not self.is_trailing_active(position):
+            return False
+        drop = (position.peak_price - position.current_price) / position.peak_price
+        triggered = drop >= self.trailing_stop_ratio
+        if triggered:
+            logger.info(
+                "risk.trailing_stop_triggered",
+                symbol=position.symbol,
+                peak=str(position.peak_price),
+                current=str(position.current_price),
+                drop=str(drop),
             )
         return triggered
 

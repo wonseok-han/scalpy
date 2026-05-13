@@ -43,6 +43,7 @@ class Position:
     opened_at: datetime = field(default_factory=datetime.now)
     unrealized_pnl: Decimal = Decimal("0")
     realized_pnl: Decimal = Decimal("0")
+    peak_price: Decimal = Decimal("0")
 
 
 @dataclass

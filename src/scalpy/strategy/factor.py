@@ -14,9 +14,9 @@ class FactorStrategy(BaseStrategy):
 
     def __init__(self) -> None:
         self._init_base()
-        self.lookback: int = 30
+        self.lookback: int = 60
         self.buy_threshold: float = 0.65
-        self.sell_threshold: float = 0.65
+        self.sell_threshold: float = 0.70
         self.weight_momentum: float = 0.4
         self.weight_volume: float = 0.3
         self.weight_orderbook: float = 0.3
@@ -51,7 +51,7 @@ class FactorStrategy(BaseStrategy):
         if start == 0:
             return 0.5
         ret = (end - start) / start
-        return max(0.0, min(1.0, 0.5 + ret * 10))
+        return max(0.0, min(1.0, 0.5 + ret * 50))
 
     def _volume_score(self, volumes: deque[int], current: int) -> float:
         if len(volumes) < 2:
@@ -86,7 +86,7 @@ class FactorStrategy(BaseStrategy):
         )
         sell_score = (
             (1 - m) * self.weight_momentum
-            + v * self.weight_volume
+            + (1 - v) * self.weight_volume
             + (1 - o) * self.weight_orderbook
         )
 
@@ -94,7 +94,7 @@ class FactorStrategy(BaseStrategy):
             confidence = min(0.9, buy_score)
             return Signal(symbol, Side.BUY, self.name, price, 0, confidence, datetime.now())
 
-        if sell_score >= self.sell_threshold and self._check_cooldown(symbol, "SELL"):
+        if sell_score >= self.sell_threshold and m <= 0.5 and self._check_cooldown(symbol, "SELL"):
             confidence = min(0.9, sell_score)
             return Signal(symbol, Side.SELL, self.name, price, 0, confidence, datetime.now())
 

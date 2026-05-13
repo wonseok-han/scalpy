@@ -31,6 +31,8 @@ class PositionManager:
         if pos is None:
             return
         pos.current_price = price
+        if price > pos.peak_price:
+            pos.peak_price = price
         if pos.side == Side.BUY:
             pos.unrealized_pnl = (price - pos.avg_price) * pos.quantity
         else:

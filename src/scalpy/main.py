@@ -83,6 +83,8 @@ def build_engine(registry: StrategyRegistry) -> tuple[TradingEngine, BaseBroker]
         max_position_ratio=trading.get("max_position_ratio", 0.3),
         stagnation_hours=trading.get("stagnation_hours", 0),
         stagnation_threshold=trading.get("stagnation_threshold", 0.005),
+        trailing_activate_ratio=trading.get("trailing_activate_ratio", 0.01),
+        trailing_stop_ratio=trading.get("trailing_stop_ratio", 0.01),
     )
     return TradingEngine(broker, registry, risk), broker
 

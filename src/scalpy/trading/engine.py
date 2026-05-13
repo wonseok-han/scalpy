@@ -28,7 +28,6 @@ _REJECTED_COOLDOWN = 60
 _CLOSE_COOLDOWN = 1800
 _SPLIT_SELL_DELAY = 1.0
 _UNFILLED_CANCEL_INTERVAL = 60
-_MIN_PROFIT_RATIO = Decimal("0.005")
 _KST = zoneinfo.ZoneInfo("Asia/Seoul")
 _MARKET_OPEN = dt_time(9, 0)
 _CUTOFF_BUY = dt_time(15, 15)
@@ -390,7 +389,7 @@ class TradingEngine:
             if pos.strategy != "synced" and pos.strategy != signal.strategy:
                 return
             gain = (pos.current_price - pos.avg_price) / pos.avg_price if pos.avg_price > 0 else Decimal("0")
-            if Decimal("0") <= gain < _MIN_PROFIT_RATIO:
+            if gain >= Decimal("0"):
                 return
             sell_pos = pos
             qty = pos.quantity
@@ -516,12 +515,12 @@ class TradingEngine:
         if pos is None:
             return
 
-        sl_ratio, tp_ratio = self._get_strategy_risk(pos.strategy)
+        sl_ratio, _tp_ratio = self._get_strategy_risk(pos.strategy)
 
         if self._risk.check_stop_loss(pos, sl_ratio):
             await self._force_close(pos, reason="stop_loss")
-        elif self._risk.check_take_profit(pos, tp_ratio):
-            await self._force_close(pos, reason="take_profit")
+        elif self._risk.check_trailing_stop(pos):
+            await self._force_close(pos, reason="trailing_stop")
         elif self._risk.check_stagnation(pos):
             await self._force_close(pos, reason="stagnation")
 
