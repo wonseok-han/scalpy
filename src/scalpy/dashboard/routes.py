@@ -422,10 +422,13 @@ async def _build_universe(quant_cfg: dict) -> tuple[list[str], dict[str, str]]:
     from scalpy.screening.quant_screener import scan_market_universe
 
     min_cr = quant_cfg.get("min_change_rate", -2.0)
+    max_cr = quant_cfg.get("max_change_rate", 15.0)
     min_vol = quant_cfg.get("min_avg_volume", 500_000)
     top_n = quant_cfg.get("universe_size", 100)
     try:
-        stocks = await asyncio.to_thread(scan_market_universe, min_vol, min_cr, 0, top_n)
+        stocks = await asyncio.to_thread(
+            scan_market_universe, min_vol, min_cr, max_cr, 0, top_n
+        )
         symbols = [s["symbol"] for s in stocks]
         names = {s["symbol"]: s["name"] for s in stocks}
         logger.info("quant.market_universe", candidates=len(symbols))

@@ -257,9 +257,10 @@ async def _quant_scan(
         try:
             from scalpy.screening.quant_screener import scan_market_universe
             min_cr = quant_cfg.get("min_change_rate", -2.0)
+            max_cr = quant_cfg.get("max_change_rate", 15.0)
             min_vol = quant_cfg.get("min_avg_volume", 500_000)
             top_n = quant_cfg.get("universe_size", 100)
-            stocks = scan_market_universe(min_vol, min_cr, 0, top_n)
+            stocks = scan_market_universe(min_vol, min_cr, max_cr, 0, top_n)
             universe = [s["symbol"] for s in stocks]
             logger.info("quant.market_universe", candidates=len(universe))
         except Exception as e:
@@ -332,6 +333,7 @@ async def _quant_rescan_loop(
                     stocks = scan_market_universe(
                         quant_cfg.get("min_avg_volume", 500_000),
                         quant_cfg.get("min_change_rate", -2.0),
+                        quant_cfg.get("max_change_rate", 15.0),
                         0,
                         quant_cfg.get("universe_size", 100),
                     )
