@@ -17,55 +17,38 @@ from scalpy.strategy.registry import StrategyRegistry
 logger = structlog.get_logger()
 
 _STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
-_INDEX_HTML = _STATIC_DIR / "index.html"
+_MAIN_HTML = _STATIC_DIR / "quant.html"
 
 
 def create_app(
     state: DashboardState,
     bus: EventBus,
     engine: Any,
-    screener: Any = None,
     stream: Any = None,
     registry: StrategyRegistry | None = None,
     trade_repo: Any = None,
 ) -> FastAPI:
-    app = FastAPI(title="Scalpy Dashboard", docs_url=None, redoc_url=None)
+    app = FastAPI(title="Scalpy Quant", docs_url=None, redoc_url=None)
 
     app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
 
     sse = SSEManager(bus)
     app.state.sse = sse
-    init_routes(state, sse, engine, bus=bus, screener=screener, stream=stream, registry=registry, trade_repo=trade_repo)
+    init_routes(state, sse, engine, bus=bus, stream=stream, registry=registry, trade_repo=trade_repo)
     app.include_router(router)
 
-    from scalpy.backtest.routes import router as bt_router
     from scalpy.backtest.quant_routes import router as qbt_router
-    app.include_router(bt_router)
     app.include_router(qbt_router)
+
+    _bt_html = _STATIC_DIR / "quant_backtest.html"
 
     @app.get("/")
     async def index() -> HTMLResponse:
-        return HTMLResponse(_INDEX_HTML.read_text())
-
-    _scalp_bt_html = _STATIC_DIR / "backtest.html"
-    _quant_html = _STATIC_DIR / "quant.html"
-    _quant_bt_html = _STATIC_DIR / "quant_backtest.html"
+        return HTMLResponse(_MAIN_HTML.read_text())
 
     @app.get("/backtest")
-    async def backtest_redirect() -> HTMLResponse:
-        return HTMLResponse(_scalp_bt_html.read_text())
-
-    @app.get("/scalping/backtest")
-    async def scalping_backtest_page() -> HTMLResponse:
-        return HTMLResponse(_scalp_bt_html.read_text())
-
-    @app.get("/quant")
-    async def quant_page() -> HTMLResponse:
-        return HTMLResponse(_quant_html.read_text())
-
-    @app.get("/quant/backtest")
-    async def quant_backtest_page() -> HTMLResponse:
-        return HTMLResponse(_quant_bt_html.read_text())
+    async def backtest_page() -> HTMLResponse:
+        return HTMLResponse(_bt_html.read_text())
 
     return app
 
@@ -76,12 +59,11 @@ def start_dashboard_server(
     engine: Any,
     host: str = "0.0.0.0",
     port: int = 8080,
-    screener: Any = None,
     stream: Any = None,
     registry: StrategyRegistry | None = None,
     trade_repo: Any = None,
 ) -> asyncio.Task:
-    app = create_app(state, bus, engine, screener, stream, registry=registry, trade_repo=trade_repo)
+    app = create_app(state, bus, engine, stream=stream, registry=registry, trade_repo=trade_repo)
 
     config = uvicorn.Config(app, host=host, port=port, log_level="info")
     server = uvicorn.Server(config)

@@ -51,22 +51,6 @@ stagnation_hours = 3
 # 횡보 판정 임계값 (0.005 = ±0.5% 이내이면 횡보로 판정)
 stagnation_threshold = 0.005
 
-[default.screening]
-# 자동 종목 스크리닝 활성화 (false: settings.toml의 symbols 사용)
-enabled = true
-# 동시 트레이딩 최대 종목 수
-max_stocks = 5
-# 최소 등락률 임계값 (2.0 = 2%, 전일 대비)
-min_change_rate = 1.5
-# 최대 등락률 상한 (8.0 = 8%, 초과 시 차익실현 매물 위험으로 제외)
-max_change_rate = 10.0
-# 최소 등락률 하한 (-2.0 = -2%, 미만 급락 종목 제외)
-min_change_rate_lower = -2.0
-# 최소 거래량 (이하 종목 제외)
-min_volume = 100000
-# 재스크리닝 주기 (분)
-interval_minutes = 30
-
 [default.quant]
 # 퀀트 스크리닝 설정
 max_stocks = 10
@@ -102,51 +86,9 @@ bot_token = ""
 chat_id = ""
 
 [default.strategies]
-# 스캘핑 활성 전략 (UI에서 런타임 토글 가능)
-# 사용 가능: ma_cross, bollinger, rsi, orderbook, vwap
-scalping_enabled = []
 # 퀀트 활성 전략
 # 사용 가능: momentum, mean_reversion, factor
 quant_enabled = ["factor"]
-
-[default.strategies.ma_cross]
-# 단기 이동평균 기간 (최근 N개 체결가의 평균)
-short_window = 3
-# 장기 이동평균 기간 (골든/데드크로스 판단 기준)
-long_window = 15
-# 같은 종목 같은 방향 신호 재발생 쿨다운 (초)
-cooldown_seconds = 120
-# 전략별 손절/익절 (미설정 시 [trading] 글로벌 값 사용)
-# stop_loss_ratio = 0.003
-# take_profit_ratio = 0.01
-
-[default.strategies.bollinger]
-# 볼린저밴드 이동평균 기간
-window = 15
-# 표준편차 배수 (밴드 폭 결정, 클수록 넓은 밴드)
-num_std = 1.5
-cooldown_seconds = 120
-
-[default.strategies.rsi]
-# RSI 계산 기간
-window = 14
-# 과매도 기준 (이하이면 매수 신호)
-oversold = 25
-# 과매수 기준 (이상이면 매도 신호)
-overbought = 65
-cooldown_seconds = 120
-
-[default.strategies.orderbook]
-# 매수/매도 호가잔량 비율 임계값 (이상이면 신호 발생)
-# 1.5 = 매수잔량이 매도잔량의 1.5배 이상이면 매수 신호
-bid_ask_ratio_threshold = 1.5
-cooldown_seconds = 60
-
-[default.strategies.vwap]
-# VWAP 대비 가격 이탈 임계값 (0.005 = 0.5%)
-# 현재가가 VWAP보다 0.5% 이상 낮으면 매수, 높으면 매도
-deviation_threshold = 0.005
-cooldown_seconds = 120
 
 [default.strategies.momentum]
 # 가격/거래량 관측 윈도우 (최근 N틱)
@@ -180,7 +122,7 @@ sell_threshold = 0.70
 weight_momentum = 0.4
 weight_volume = 0.3
 weight_orderbook = 0.3
-cooldown_seconds = 1800
+cooldown_seconds = 180
 # 복합 팩터 — 가장 넓은 손절/익절
 stop_loss_ratio = 0.025
 take_profit_ratio = 0.04

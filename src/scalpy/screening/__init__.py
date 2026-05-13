@@ -1,3 +1,3 @@
-from scalpy.screening.screener import StockScreener
+from scalpy.screening.quant_screener import QuantScreener
 
-__all__ = ["StockScreener"]
+__all__ = ["QuantScreener"]
