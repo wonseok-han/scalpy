@@ -20,11 +20,15 @@ class RiskManager:
         stagnation_threshold: float = 0.005,
         trailing_activate_ratio: float = 0.01,
         trailing_stop_ratio: float = 0.01,
+        profit_protect_activate: float = 0,
+        profit_protect_ratio: float = 0.001,
     ) -> None:
         self.stop_loss_ratio = Decimal(str(stop_loss_ratio))
         self.take_profit_ratio = Decimal(str(take_profit_ratio))
         self.trailing_activate_ratio = Decimal(str(trailing_activate_ratio))
         self.trailing_stop_ratio = Decimal(str(trailing_stop_ratio))
+        self.profit_protect_activate = Decimal(str(profit_protect_activate))
+        self.profit_protect_ratio = Decimal(str(profit_protect_ratio))
         self.max_position_size = max_position_size
         self.max_open_positions = max_open_positions
         self.max_position_ratio = max_position_ratio
@@ -79,6 +83,27 @@ class RiskManager:
                 peak=str(position.peak_price),
                 current=str(position.current_price),
                 drop=str(drop),
+            )
+        return triggered
+
+    def check_profit_protect(self, position: Position) -> bool:
+        if self.profit_protect_activate <= 0:
+            return False
+        if position.quantity == 0 or position.avg_price <= 0 or position.peak_price <= 0:
+            return False
+        if self.is_trailing_active(position):
+            return False
+        peak_gain = (position.peak_price - position.avg_price) / position.avg_price
+        if peak_gain < self.profit_protect_activate:
+            return False
+        current_gain = (position.current_price - position.avg_price) / position.avg_price
+        triggered = current_gain <= self.profit_protect_ratio
+        if triggered:
+            logger.info(
+                "risk.profit_protect_triggered",
+                symbol=position.symbol,
+                peak_gain=str(peak_gain),
+                current_gain=str(current_gain),
             )
         return triggered
 

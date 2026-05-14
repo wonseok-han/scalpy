@@ -32,6 +32,8 @@ class OrderManager:
             id=order.id,
             symbol=order.symbol,
             side=order.side.value,
+            qty=order.quantity,
+            price=str(order.price),
         )
         result = await self._broker.place_order(order)
         self._pending.popleft()

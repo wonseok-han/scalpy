@@ -395,8 +395,12 @@ class TradingEngine:
                 return
             if pos.strategy != "synced" and pos.strategy != signal.strategy:
                 return
+            min_hold = settings.get("trading.min_hold_seconds", 60)
+            held = (datetime.now(pos.opened_at.tzinfo) - pos.opened_at).total_seconds()
+            if held < min_hold:
+                return
             gain = (pos.current_price - pos.avg_price) / pos.avg_price if pos.avg_price > 0 else Decimal("0")
-            if gain >= Decimal("0"):
+            if gain >= Decimal("0") and self._risk.is_trailing_active(pos):
                 return
             sell_pos = pos
             qty = pos.quantity
@@ -529,6 +533,8 @@ class TradingEngine:
             await self._force_close(pos, reason="stop_loss")
         elif self._risk.check_trailing_stop(pos):
             await self._force_close(pos, reason="trailing_stop")
+        elif self._risk.check_profit_protect(pos):
+            await self._force_close(pos, reason="profit_protect")
         elif self._risk.check_stagnation(pos):
             await self._force_close(pos, reason="stagnation")
 
@@ -563,6 +569,11 @@ class TradingEngine:
             if result.status == OrderStatus.REJECTED:
                 if total_sold == 0:
                     self.positions.remove(pos.symbol)
+                    if self._trade_repo:
+                        try:
+                            self._trade_repo.close_position(pos.symbol)
+                        except Exception:
+                            pass
                 if "잔고" in result.reject_reason or "매매불가" in result.reject_reason:
                     self._untradeable.add(pos.symbol)
                     logger.warning(

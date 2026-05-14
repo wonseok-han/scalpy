@@ -16,10 +16,12 @@ _WARN_KEYWORDS = ("SPAC", "관리종목", "투자주의", "투자경고", "투�
 _warn_symbols: set[str] = set()
 
 _KOSPI_MST_URL = "https://new.real.download.dws.co.kr/common/master/kospi_code.mst.zip"
-_KOSDAQ_MST_URL = "https://new.real.download.dws.co.kr/common/master/kosdaq_code.mst.zip"
+_KOSDAQ_MST_URL = (
+    "https://new.real.download.dws.co.kr/common/master/kosdaq_code.mst.zip"
+)
 
 # 종목마스터 시장경고 코드: 00=해당없음, 01=투자주의, 02=투자경고, 03=투자위험
-_MST_WARN_CODES = {"01", "02", "03"}
+_MST_WARN_CODES = {"03"}
 
 
 def get_warn_symbols() -> set[str]:
@@ -98,14 +100,16 @@ def scan_market_universe(
 
     result = []
     for _, row in df.iterrows():
-        result.append({
-            "symbol": row["Code"],
-            "name": row["Name"],
-            "close": int(row["Close"]) if row["Close"] else 0,
-            "change_rate": float(row["ChagesRatio"]) if row["ChagesRatio"] else 0.0,
-            "volume": int(row["Volume"]) if row["Volume"] else 0,
-            "amount": int(row["Amount"]) if row["Amount"] else 0,
-        })
+        result.append(
+            {
+                "symbol": row["Code"],
+                "name": row["Name"],
+                "close": int(row["Close"]) if row["Close"] else 0,
+                "change_rate": float(row["ChagesRatio"]) if row["ChagesRatio"] else 0.0,
+                "volume": int(row["Volume"]) if row["Volume"] else 0,
+                "amount": int(row["Amount"]) if row["Amount"] else 0,
+            }
+        )
 
     master_warned = load_warn_symbols_from_master()
     if master_warned:
@@ -116,7 +120,9 @@ def scan_market_universe(
         if excluded:
             logger.info("market_universe.master_excluded", count=excluded)
 
-    logger.info("market_universe.scanned", filtered=len(df), top_n=top_n, passed=len(result))
+    logger.info(
+        "market_universe.scanned", filtered=len(df), top_n=top_n, passed=len(result)
+    )
     return result
 
 
@@ -146,14 +152,18 @@ class QuantScreener:
         self.symbol_names: dict[str, str] = {}
         self._last_scan: list[dict[str, Any]] = []
 
-    def scan(self, symbols: list[str], held_symbols: list[str] | None = None) -> list[str]:
+    def scan(
+        self, symbols: list[str], held_symbols: list[str] | None = None
+    ) -> list[str]:
         held = set(held_symbols or [])
         warned = get_warn_symbols()
         symbols = [s for s in symbols if s not in warned]
         scored: list[dict[str, Any]] = []
 
         for sym in symbols:
-            candles = self._repo.get_candles(sym, interval="1d", limit=self._momentum_days + 10)
+            candles = self._repo.get_candles(
+                sym, interval="1d", limit=self._momentum_days + 10
+            )
             if len(candles) < self._momentum_days:
                 continue
 
@@ -177,7 +187,9 @@ class QuantScreener:
         self._last_scan = ranked
 
         available_slots = max(0, self._max_stocks - len(held))
-        new_symbols = [s["symbol"] for s in ranked if s["symbol"] not in held][:available_slots]
+        new_symbols = [s["symbol"] for s in ranked if s["symbol"] not in held][
+            :available_slots
+        ]
         result = list(held) + new_symbols
 
         logger.info(
@@ -219,7 +231,9 @@ class QuantScreener:
         avg_volume = sum(volumes) / len(volumes) if volumes else 0
 
         # 평균 거래대금 (유동성)
-        avg_turnover = sum(c * v for c, v in zip(closes, volumes)) / len(closes) if closes else 0
+        avg_turnover = (
+            sum(c * v for c, v in zip(closes, volumes)) / len(closes) if closes else 0
+        )
 
         # 거래량 급증: 최근 5일 vs 그 이전 전체
         recent_n = min(5, len(volumes))

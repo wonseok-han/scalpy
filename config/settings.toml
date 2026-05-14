@@ -44,12 +44,19 @@ take_profit_ratio = 0.03
 trailing_activate_ratio = 0.01
 # 매도 기준 (0.02 = 2%, 고점 대비 이 이상 하락 시 매도)
 trailing_stop_ratio = 0.02
+# 수익 보호 스탑: trailing 활성화 전 본전 방어
+# 활성화 기준 (0.003 = 0.3%, peak gain이 이 이상 도달한 적 있으면 보호 시작, 0 = 비활성화)
+profit_protect_activate = 0.003
+# 매도 기준 (0.001 = 0.1%, 현재 수익률이 이 이하로 떨어지면 매도)
+profit_protect_ratio = 0.001
 # 강제 청산 분할 매도 횟수 (1 = 전량 일괄, 3 = 3분할 매도, 슬리피지 방지)
 force_close_splits = 3
 # 횡보 청산: N시간 보유 후 수익률이 ±threshold 이내이면 자동 청산 (0 = 비활성화)
 stagnation_hours = 3
 # 횡보 판정 임계값 (0.005 = ±0.5% 이내이면 횡보로 판정)
 stagnation_threshold = 0.005
+# 최소 보유 시간 (초, 매수 후 이 시간 동안 전략 매도 차단, 손절/trailing 등 리스크 매도는 허용)
+min_hold_seconds = 60
 # 청산 후 재매수 대기 시간 (초, 같은 종목 청산 후 이 시간 동안 재매수 차단)
 close_cooldown_seconds = 180
 
@@ -117,9 +124,11 @@ take_profit_ratio = 0.04
 [default.strategies.factor]
 # 팩터 관측 윈도우
 lookback = 60
+# 최소 체결량 (이하 틱 무시, 1주짜리 봇 주문 필터링)
+min_tick_volume = 5
 # 팩터 점수 임계값 (0~1, 높을수록 보수적)
-buy_threshold = 0.65
-sell_threshold = 0.70
+buy_threshold = 0.75
+sell_threshold = 0.65
 # 팩터 가중치 (합계 1.0)
 weight_momentum = 0.4
 weight_volume = 0.3

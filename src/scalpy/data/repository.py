@@ -528,7 +528,7 @@ class TradeRepository:
                 )
             )
             if existing:
-                return
+                existing.closed_at = dt.now()
             session.add(PositionRow(
                 symbol=symbol, side="buy", quantity=0,
                 avg_price=0, strategy=strategy, opened_at=opened,
