@@ -656,6 +656,7 @@ async def start_engine() -> dict[str, Any]:
         _engine_ref._running = True
         _engine_ref.start_background_loops()
 
+        _trading_started = True
         _apply_strategies()
         quant_on = settings.get("strategies.quant_enabled", [])
 
@@ -677,14 +678,13 @@ async def start_engine() -> dict[str, Any]:
 
         if _bus:
             await _bus.emit("engine.started")
-
-        _trading_started = True
         logger.info("dashboard.engine_started", symbols=symbols)
         resp: dict[str, Any] = {"success": True, "symbols": symbols}
         if _last_quant_scan:
             resp["scan"] = _last_quant_scan
         return resp
     except Exception as e:
+        _trading_started = False
         logger.error("dashboard.start_failed", error=str(e))
         return {"success": False, "error": str(e)}
 

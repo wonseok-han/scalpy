@@ -9,6 +9,7 @@ from typing import Any
 import structlog
 
 from scalpy.broker.base import BaseBroker
+from scalpy.config import settings
 from scalpy.core.enums import OrderStatus, Side
 from scalpy.core.models import Position, Signal
 from scalpy.events.bus import EventBus
@@ -25,7 +26,6 @@ _SYNC_INTERVAL = 10
 _RISK_CHECK_INTERVAL = 10
 _MIN_CONFIDENCE = 0.5
 _REJECTED_COOLDOWN = 60
-_CLOSE_COOLDOWN = 1800
 _SPLIT_SELL_DELAY = 1.0
 _UNFILLED_CANCEL_INTERVAL = 60
 _KST = zoneinfo.ZoneInfo("Asia/Seoul")
@@ -361,7 +361,8 @@ class TradingEngine:
 
         if signal.side == Side.BUY:
             closed_at = self._closed_symbols.get(signal.symbol)
-            if closed_at and time.monotonic() - closed_at < _CLOSE_COOLDOWN:
+            close_cooldown = settings.get("trading.close_cooldown_seconds", 300)
+            if closed_at and time.monotonic() - closed_at < close_cooldown:
                 return
             rejected_at = self._rejected_symbols.get(signal.symbol)
             if rejected_at and time.monotonic() - rejected_at < _REJECTED_COOLDOWN:
@@ -491,7 +492,6 @@ class TradingEngine:
         if self._market_close_done:
             return
 
-        from scalpy.config import settings
         if not settings.get("trading.market_close_liquidate", True):
             self._market_close_done = True
             logger.info("engine.market_close_hold", count=len(self.positions.all()))
@@ -533,7 +533,6 @@ class TradingEngine:
             await self._force_close(pos, reason="stagnation")
 
     async def _force_close(self, pos: Position, reason: str = "") -> None:
-        from scalpy.config import settings
         if reason == "stop_loss" or not self._trade_repo:
             splits = 1
         else:

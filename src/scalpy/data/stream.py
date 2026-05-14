@@ -143,6 +143,13 @@ class MarketDataStream:
 
     async def start(self, symbols: list[str]) -> None:
         await self._cleanup_recv_task()
+        if self._ws:
+            try:
+                await asyncio.wait_for(self._ws.close(), timeout=2)
+            except (asyncio.TimeoutError, Exception):
+                pass
+            self._ws = None
+        self._subscribed.clear()
 
         if not self._app_key:
             from scalpy.data.simulator import MarketSimulator

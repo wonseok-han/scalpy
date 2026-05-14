@@ -496,7 +496,8 @@ function updateStatus(s){
   document.getElementById('pos-count').textContent=s.position_count;
   const inv=s.invested||'0';
   document.getElementById('invested').textContent=inv==='0'?'-':fmt(inv)+'원';
-  const avail=s.available_balance||'-';
+  const invN=Number(inv)||0;const balN=Number(bal)||0;
+  const avail=balN>0?String(balN-invN):'-';
   document.getElementById('available-balance').textContent=avail==='-'?'-':fmt(avail)+'원';
   document.getElementById('pending-orders').textContent='미체결: '+(s.pending_order_count||0)+'건';
   const engineEl=document.getElementById('engine-running');
