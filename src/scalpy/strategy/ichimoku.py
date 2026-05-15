@@ -40,7 +40,7 @@ class IchimokuStrategy(BaseStrategy):
         self.candle_minutes: int = 1
         self.cooldown_seconds: int = 300
         self.stop_loss_ratio: float | None = 0.025
-        self.take_profit_ratio: float | None = 0.04
+        self.take_profit_ratio: float | None = None
         self.min_tick_volume: int = 5
         self._candles: dict[str, deque[_Candle]] = {}
         self._current_candle: dict[str, _Candle] = {}
@@ -73,7 +73,10 @@ class IchimokuStrategy(BaseStrategy):
         if elapsed >= interval:
             if symbol in self._current_candle:
                 candles.append(self._current_candle[symbol])
-                self._live_candle_count[symbol] = self._live_candle_count.get(symbol, 0) + 1
+                count = self._live_candle_count.get(symbol, 0) + 1
+                self._live_candle_count[symbol] = count
+                if count <= self.senkou_b_period and count % 10 == 0:
+                    logger.info("ichimoku.warmup", symbol=symbol, candles=count, need=self.senkou_b_period)
             self._candle_start[symbol] = now
             self._current_candle[symbol] = _Candle(price)
         else:
@@ -118,8 +121,6 @@ class IchimokuStrategy(BaseStrategy):
 
         candle_count = self._live_candle_count.get(symbol, 0)
         if candle_count < self.senkou_b_period:
-            if candle_count > 0 and candle_count % 10 == 0:
-                logger.info("ichimoku.warmup", symbol=symbol, candles=candle_count, need=self.senkou_b_period)
             return None
 
         ichi = self._compute(symbol)
@@ -141,10 +142,19 @@ class IchimokuStrategy(BaseStrategy):
             confidence = min(0.85, 0.5 + spread * 20)
             return Signal(symbol, Side.BUY, self.name, price, 0, confidence, now)
 
+        # SELL: 구름 하단 이탈 + TK 베어 (완전 반전, 최강)
         if below_cloud and tk_bear and self._check_cooldown(symbol, "SELL"):
             spread = float(cloud_bottom - price) / float(cloud_bottom) if cloud_bottom else 0
             confidence = min(0.85, 0.5 + spread * 20)
             return Signal(symbol, Side.SELL, self.name, price, 0, confidence, now)
+
+        # SELL: 기준선 이탈 (가격이 kijun 아래, 아직 구름 밑은 아닌 경우)
+        if not below_cloud and price < kijun and self._check_cooldown(symbol, "SELL"):
+            return Signal(symbol, Side.SELL, self.name, price, 0, 0.7, now)
+
+        # SELL: TK 데드크로스 (구름 위에서 전환선 < 기준선, 추세 약화 초기 신호)
+        if above_cloud and tk_bear and self._check_cooldown(symbol, "SELL"):
+            return Signal(symbol, Side.SELL, self.name, price, 0, 0.6, now)
 
         return None
 

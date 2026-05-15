@@ -143,14 +143,18 @@ class TradingEngine:
                 ichi = s
                 break
         if ichi is None:
+            logger.debug("engine.ichimoku_prefill_skip", reason="no_enabled_ichimoku")
             return
         need = ichi.senkou_b_period + 5
+        logger.info("engine.ichimoku_prefill_start", symbols=len(symbols), need=need)
         for sym in symbols:
             try:
                 candles = await self._broker.get_minute_candles(sym, need)
                 if candles:
                     ichi.prefill(sym, candles)
                     logger.info("engine.ichimoku_prefilled", symbol=sym, candles=len(candles))
+                else:
+                    logger.info("engine.ichimoku_prefill_empty", symbol=sym)
             except Exception as e:
                 logger.warning("engine.ichimoku_prefill_failed", symbol=sym, error=str(e))
 
@@ -441,7 +445,8 @@ class TradingEngine:
                 return
             gain = (pos.current_price - pos.avg_price) / pos.avg_price if pos.avg_price > 0 else Decimal("0")
             if gain >= Decimal("0") and self._risk.is_trailing_active(pos):
-                return
+                if signal.confidence < 0.7:
+                    return
             sell_pos = pos
             qty = pos.quantity
 

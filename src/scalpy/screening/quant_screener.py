@@ -143,12 +143,14 @@ class QuantScreener:
         momentum_days: int = 20,
         min_avg_volume: int = 500_000,
         min_momentum: float = 0.0,
+        ichimoku_filter: bool = False,
     ) -> None:
         self._repo = ohlcv_repo
         self._max_stocks = max_stocks
         self._momentum_days = momentum_days
         self._min_avg_volume = min_avg_volume
         self._min_momentum = min_momentum
+        self._ichimoku_filter = ichimoku_filter
         self.symbol_names: dict[str, str] = {}
         self._last_scan: list[dict[str, Any]] = []
 
@@ -160,9 +162,12 @@ class QuantScreener:
         symbols = [s for s in symbols if s not in warned]
         scored: list[dict[str, Any]] = []
 
+        candle_limit = max(self._momentum_days + 10, 62)
+        cloud_stats = {"above": 0, "inside": 0, "below": 0, "unknown": 0}
+
         for sym in symbols:
             candles = self._repo.get_candles(
-                sym, interval="1d", limit=self._momentum_days + 10
+                sym, interval="1d", limit=candle_limit
             )
             if len(candles) < self._momentum_days:
                 continue
@@ -176,7 +181,15 @@ class QuantScreener:
             if factors["momentum"] < self._min_momentum:
                 continue
 
+            cloud_pos = factors.get("cloud_position", "unknown")
+            cloud_stats[cloud_pos] = cloud_stats.get(cloud_pos, 0) + 1
+            if self._ichimoku_filter and cloud_pos == "below":
+                continue
+
             scored.append({"symbol": sym, **factors})
+
+        if self._ichimoku_filter:
+            logger.info("quant_screener.cloud_filter", **cloud_stats)
 
         if not scored:
             logger.warning("quant_screener.no_candidates")
@@ -202,6 +215,34 @@ class QuantScreener:
 
     def get_last_scan(self) -> list[dict[str, Any]]:
         return self._last_scan
+
+    def _ichimoku_cloud_position(self, candles: list[dict]) -> str:
+        """일봉 기준 일목균형 구름 대비 위치 판정."""
+        highs = [c["high"] for c in candles]
+        lows = [c["low"] for c in candles]
+        closes = [c["close"] for c in candles]
+        n = len(candles)
+        if n < 52:
+            return "unknown"
+
+        def midpoint(data_h: list, data_l: list, period: int) -> float:
+            h = max(data_h[-period:])
+            l = min(data_l[-period:])
+            return (h + l) / 2
+
+        tenkan = midpoint(highs, lows, 9)
+        kijun = midpoint(highs, lows, 26)
+        senkou_a = (tenkan + kijun) / 2
+        senkou_b = midpoint(highs, lows, 52)
+        cloud_top = max(senkou_a, senkou_b)
+        cloud_bottom = min(senkou_a, senkou_b)
+        price = closes[-1]
+
+        if price > cloud_top:
+            return "above"
+        if price < cloud_bottom:
+            return "below"
+        return "inside"
 
     def _calc_factors(self, candles: list[dict]) -> dict[str, Any] | None:
         closes = [c["close"] for c in candles]
@@ -257,6 +298,8 @@ class QuantScreener:
         # RSI
         rsi = self._calc_rsi(closes)
 
+        cloud_pos = self._ichimoku_cloud_position(candles)
+
         return {
             "momentum": round(momentum, 4),
             "volatility": round(volatility, 4),
@@ -267,6 +310,7 @@ class QuantScreener:
             "atr_pct": round(atr_pct, 4),
             "rsi": round(rsi, 1) if rsi is not None else None,
             "close": closes[-1],
+            "cloud_position": cloud_pos,
         }
 
     def _calc_rsi(self, closes: list[int], period: int = 14) -> float | None:
@@ -316,12 +360,15 @@ class QuantScreener:
             # 5) ATR% (변동성 기회): z-score
             z_atr = (s["atr_pct"] - mu_atr) / sd_atr if sd_atr > 0 else 0
 
+            cloud_bonus = 0.3 if self._ichimoku_filter and s.get("cloud_position") == "above" else 0.0
+
             s["score"] = round(
                 z_sharpe * 0.35
                 + z_surge * 0.20
                 + z_turn * 0.15
                 + rsi_score * 0.15
-                + z_atr * 0.15,
+                + z_atr * 0.15
+                + cloud_bonus,
                 4,
             )
 

@@ -220,12 +220,14 @@ async def _quant_scan(
 
     ohlcv_repo.bulk_fetch(universe, interval="1d", period="3mo")
 
+    ichi_on = "ichimoku" in settings.get("strategies.quant_enabled", [])
     screener = QuantScreener(
         ohlcv_repo=ohlcv_repo,
         max_stocks=quant_cfg.get("max_stocks", 10),
         momentum_days=quant_cfg.get("momentum_days", 20),
         min_avg_volume=quant_cfg.get("min_avg_volume", 500_000),
         min_momentum=quant_cfg.get("min_momentum", 0.0),
+        ichimoku_filter=ichi_on,
     )
     held = [p.symbol for p in engine.positions.all()]
     symbols = screener.scan(universe, held_symbols=held)
@@ -299,12 +301,14 @@ async def _quant_rescan_loop(
 
             ohlcv_repo.bulk_fetch(universe, interval="1d")
 
+            ichi_on = "ichimoku" in settings.get("strategies.quant_enabled", [])
             screener = QuantScreener(
                 ohlcv_repo=ohlcv_repo,
                 max_stocks=quant_cfg.get("max_stocks", 10),
                 momentum_days=quant_cfg.get("momentum_days", 20),
                 min_avg_volume=quant_cfg.get("min_avg_volume", 500_000),
                 min_momentum=quant_cfg.get("min_momentum", 0.0),
+                ichimoku_filter=ichi_on,
             )
             held = [p.symbol for p in engine.positions.all()]
             new_symbols = screener.scan(universe, held_symbols=held)

@@ -319,6 +319,7 @@ class KISBroker(BaseBroker):
 
     async def get_minute_candles(self, symbol: str, count: int = 60) -> list[dict]:
         if not self._connected or self._api is None:
+            logger.warning("kis_broker.minute_candles_skipped", symbol=symbol, connected=self._connected, has_api=self._api is not None)
             return []
         from pykis import APIRequestParameter
 
