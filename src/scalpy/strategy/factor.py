@@ -23,6 +23,7 @@ class FactorStrategy(BaseStrategy):
         self.cooldown_seconds: int = 1800
         self.stop_loss_ratio: float | None = 0.025
         self.take_profit_ratio: float | None = 0.04
+        self.min_tick_volume: int = 5
         self._prices: dict[str, deque[Decimal]] = {}
         self._volumes: dict[str, deque[int]] = {}
         self._ob_imbalance: dict[str, float] = {}
@@ -53,6 +54,26 @@ class FactorStrategy(BaseStrategy):
         ret = (end - start) / start
         return max(0.0, min(1.0, 0.5 + ret * 50))
 
+    def _is_near_peak(self, prices: deque[Decimal], window: int = 10) -> bool:
+        if len(prices) < window:
+            return False
+        recent = list(prices)[-window:]
+        peak = max(float(p) for p in recent)
+        current = float(recent[-1])
+        if peak == 0:
+            return False
+        return (peak - current) / peak < 0.001
+
+    def _is_short_term_declining(self, prices: deque[Decimal], window: int = 5) -> bool:
+        if len(prices) < window + 1:
+            return False
+        recent = list(prices)[-window:]
+        base = float(recent[0])
+        if base == 0:
+            return False
+        ret = (float(recent[-1]) - base) / base
+        return ret < -0.001
+
     def _volume_score(self, volumes: deque[int], current: int) -> float:
         if len(volumes) < 2:
             return 0.5
@@ -65,7 +86,15 @@ class FactorStrategy(BaseStrategy):
     def _orderbook_score(self, symbol: str) -> float:
         return self._ob_imbalance.get(symbol, 0.5)
 
+    def _is_below_sma(self, prices: deque[Decimal]) -> bool:
+        if len(prices) < self.lookback:
+            return False
+        sma = sum(float(p) for p in prices) / len(prices)
+        return float(prices[-1]) < sma
+
     async def on_tick(self, symbol: str, price: Decimal, volume: int) -> Signal | None:
+        if volume < self.min_tick_volume:
+            return None
         self._advance_tick(symbol)
         prices = self._get_prices(symbol)
         volumes = self._get_volumes(symbol)
@@ -91,6 +120,10 @@ class FactorStrategy(BaseStrategy):
         )
 
         if buy_score >= self.buy_threshold and m >= 0.5 and self._check_cooldown(symbol, "BUY"):
+            if self._is_short_term_declining(prices) or self._is_near_peak(prices):
+                return None
+            if self._is_below_sma(prices):
+                return None
             confidence = min(0.9, buy_score)
             return Signal(symbol, Side.BUY, self.name, price, 0, confidence, datetime.now())
 

@@ -39,6 +39,7 @@ _stream_ref: Any = None
 _registry_ref: StrategyRegistry | None = None
 _trade_repo_ref: Any = None
 _trading_started: bool = False
+_initial_start_done: bool = False
 _quant_rescan_task: asyncio.Task[None] | None = None
 _perf_cache: dict[str, dict] = {}
 _perf_sync_task: asyncio.Task[None] | None = None
@@ -130,7 +131,11 @@ async def _sync_trades_now() -> None:
 
 
 async def _daily_rescan(date: str) -> None:
-    global _last_quant_scan
+    global _last_quant_scan, _initial_start_done
+    if not _initial_start_done:
+        _initial_start_done = True
+        logger.debug("routes.daily_rescan_skip_initial", date=date)
+        return
     logger.info("routes.daily_rescan_start", date=date)
 
     _last_quant_scan = []
@@ -257,6 +262,7 @@ def _build_sse_state() -> dict[str, Any]:
             "symbols": _state.screening_symbols if _state else [],
             "names": _state.symbol_names if _state else {},
         },
+        "market_condition": _state.market_condition if _state else {},
     }
 
 
@@ -308,6 +314,7 @@ async def get_status() -> dict[str, Any]:
         "strategies": strategy_names,
         "strategy_enabled": strategy_enabled,
         "trading_started": _trading_started,
+        "market_condition": _state.market_condition if _state else {},
     }
 
 
@@ -456,7 +463,7 @@ async def cancel_all_orders() -> dict[str, Any]:
         return {"success": False, "error": str(e)}
 
 
-_QUANT_STRATEGIES = {"momentum", "mean_reversion", "factor"}
+_QUANT_STRATEGIES = {"momentum", "mean_reversion", "factor", "ichimoku"}
 
 
 def _apply_strategies() -> None:
@@ -486,6 +493,9 @@ async def _build_universe(quant_cfg: dict, max_price: int = 0) -> tuple[list[str
         symbols = [s["symbol"] for s in stocks]
         names = {s["symbol"]: s["name"] for s in stocks}
         logger.info("quant.market_universe", candidates=len(symbols))
+        from scalpy.screening.quant_screener import get_market_condition
+        if _state:
+            _state.market_condition = get_market_condition()
         return symbols, names
     except Exception as e:
         logger.warning("quant.market_universe_failed", error=str(e))
@@ -535,12 +545,14 @@ async def _quant_start() -> list[str]:
     ohlcv_repo.create_tables()
     ohlcv_repo.bulk_fetch(universe, interval="1d", period="3mo")
 
+    ichi_on = "ichimoku" in settings.get("strategies.quant_enabled", [])
     screener = QuantScreener(
         ohlcv_repo=ohlcv_repo,
         max_stocks=quant_cfg.get("max_stocks", 10),
         momentum_days=quant_cfg.get("momentum_days", 20),
         min_avg_volume=quant_cfg.get("min_avg_volume", 500_000),
         min_momentum=quant_cfg.get("min_momentum", 0.0),
+        ichimoku_filter=ichi_on,
     )
     held = [p.symbol for p in _engine_ref.positions.all()] if _engine_ref else []
     selected = screener.scan(universe, held_symbols=held)
@@ -556,6 +568,7 @@ async def _quant_start() -> list[str]:
             candles = ohlcv_repo.get_candles(sym, interval="1d", limit=60)
             if candles:
                 _engine_ref.prefill_strategies(sym, candles)
+        await _engine_ref.prefill_minute_candles(selected)
 
     rescan_min = quant_cfg.get("rescan_interval_minutes", 30)
     if rescan_min > 0 and (not _quant_rescan_task or _quant_rescan_task.done()):
@@ -603,12 +616,14 @@ async def _quant_rescan_loop(
 
             ohlcv_repo.bulk_fetch(universe, interval="1d")
 
+            ichi_on = "ichimoku" in settings.get("strategies.quant_enabled", [])
             screener = QuantScreener(
                 ohlcv_repo=ohlcv_repo,
                 max_stocks=quant_cfg.get("max_stocks", 10),
                 momentum_days=quant_cfg.get("momentum_days", 20),
                 min_avg_volume=quant_cfg.get("min_avg_volume", 500_000),
                 min_momentum=quant_cfg.get("min_momentum", 0.0),
+                ichimoku_filter=ichi_on,
             )
             held = [p.symbol for p in _engine_ref.positions.all()] if _engine_ref else []
             new_symbols = screener.scan(universe, held_symbols=held)
@@ -627,6 +642,7 @@ async def _quant_rescan_loop(
                     candles = ohlcv_repo.get_candles(sym, interval="1d", limit=60)
                     if candles:
                         _engine_ref.prefill_strategies(sym, candles)
+                await _engine_ref.prefill_minute_candles(new_symbols)
                 logger.info("quant_rescan.updated", symbols=new_symbols)
                 if _bus:
                     await _bus.emit("screening.completed", {
@@ -656,6 +672,7 @@ async def start_engine() -> dict[str, Any]:
         _engine_ref._running = True
         _engine_ref.start_background_loops()
 
+        _trading_started = True
         _apply_strategies()
         quant_on = settings.get("strategies.quant_enabled", [])
 
@@ -677,21 +694,20 @@ async def start_engine() -> dict[str, Any]:
 
         if _bus:
             await _bus.emit("engine.started")
-
-        _trading_started = True
         logger.info("dashboard.engine_started", symbols=symbols)
         resp: dict[str, Any] = {"success": True, "symbols": symbols}
         if _last_quant_scan:
             resp["scan"] = _last_quant_scan
         return resp
     except Exception as e:
+        _trading_started = False
         logger.error("dashboard.start_failed", error=str(e))
         return {"success": False, "error": str(e)}
 
 
 @router.post("/actions/stop")
 async def stop_engine() -> dict[str, Any]:
-    global _trading_started, _quant_rescan_task
+    global _trading_started, _quant_rescan_task, _initial_start_done
     if _engine_ref is None:
         return {"success": False}
     if not _trading_started:
@@ -701,6 +717,7 @@ async def stop_engine() -> dict[str, Any]:
     _engine_ref._running = False
     _engine_ref.stop_background_loops()
     _trading_started = False
+    _initial_start_done = False
     if _quant_rescan_task and not _quant_rescan_task.done():
         _quant_rescan_task.cancel()
     _quant_rescan_task = None
@@ -727,6 +744,27 @@ async def rescan() -> dict[str, Any]:
         return {"success": True, "symbols": quant_symbols}
     except Exception as e:
         return {"success": False, "error": str(e)}
+
+
+@router.get("/market-condition")
+async def get_market_condition_api() -> dict[str, Any]:
+    """장세 판단 — 스크리닝 전에도 독립 호출 가능."""
+    if _state and _state.market_condition:
+        return _state.market_condition
+    from scalpy.screening.quant_screener import get_market_condition, scan_market_universe
+    quant_cfg = settings.get("quant", {})
+    min_vol = quant_cfg.get("min_avg_volume", 500_000)
+    min_cr = quant_cfg.get("min_change_rate", -2.0)
+    max_cr = quant_cfg.get("max_change_rate", 15.0)
+    top_n = quant_cfg.get("universe_size", 100)
+    try:
+        await asyncio.to_thread(scan_market_universe, min_vol, min_cr, max_cr, 0, top_n)
+        mc = get_market_condition()
+        if _state:
+            _state.market_condition = mc
+        return mc
+    except Exception as e:
+        return {"error": str(e)}
 
 
 @router.post("/strategies/{name}/toggle")
@@ -819,12 +857,14 @@ async def quant_scan(refresh: bool = False) -> dict[str, Any]:
 
     ohlcv_repo.bulk_fetch(universe, interval="1d", period="3mo")
 
+    ichi_on = "ichimoku" in settings.get("strategies.quant_enabled", [])
     screener = QuantScreener(
         ohlcv_repo=ohlcv_repo,
         max_stocks=quant_cfg.get("max_stocks", 10),
         momentum_days=quant_cfg.get("momentum_days", 20),
         min_avg_volume=quant_cfg.get("min_avg_volume", 500_000),
         min_momentum=quant_cfg.get("min_momentum", 0.0),
+        ichimoku_filter=ichi_on,
     )
     held = [p.symbol for p in _engine_ref.positions.all()] if _engine_ref else []
     screener.scan(universe, held_symbols=held)

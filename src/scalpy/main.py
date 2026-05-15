@@ -10,6 +10,7 @@ from scalpy.config import settings
 from scalpy.data.stream import MarketDataStream
 from scalpy.events import EventBus
 from scalpy.strategy.factor import FactorStrategy
+from scalpy.strategy.ichimoku import IchimokuStrategy
 from scalpy.strategy.mean_reversion import MeanReversionStrategy
 from scalpy.strategy.momentum import MomentumStrategy
 from scalpy.strategy.registry import StrategyRegistry
@@ -25,6 +26,7 @@ def build_registry() -> StrategyRegistry:
         MomentumStrategy(),
         MeanReversionStrategy(),
         FactorStrategy(),
+        IchimokuStrategy(),
     ]
     quant_enabled = set(settings.get("strategies.quant_enabled", ["momentum"]))
     for s in all_strategies:
@@ -73,6 +75,8 @@ def build_engine(registry: StrategyRegistry) -> tuple[TradingEngine, BaseBroker]
         stagnation_threshold=trading.get("stagnation_threshold", 0.005),
         trailing_activate_ratio=trading.get("trailing_activate_ratio", 0.01),
         trailing_stop_ratio=trading.get("trailing_stop_ratio", 0.01),
+        profit_protect_activate=trading.get("profit_protect_activate", 0),
+        profit_protect_ratio=trading.get("profit_protect_ratio", 0.001),
     )
     return TradingEngine(broker, registry, risk), broker
 
@@ -109,7 +113,7 @@ async def _trade_sync_loop(
             pass
 
 
-_QUANT_STRATEGIES = {"momentum", "mean_reversion", "factor"}
+_QUANT_STRATEGIES = {"momentum", "mean_reversion", "factor", "ichimoku"}
 
 
 def _apply_strategies(registry: StrategyRegistry) -> None:
@@ -163,6 +167,7 @@ async def _start_trading(
 
     await stream.start(symbols)
     _prefill_from_ohlcv(engine, symbols)
+    await engine.prefill_minute_candles(symbols)
     logger.info("scalpy.trading_started", symbols=symbols)
 
 
@@ -215,12 +220,14 @@ async def _quant_scan(
 
     ohlcv_repo.bulk_fetch(universe, interval="1d", period="3mo")
 
+    ichi_on = "ichimoku" in settings.get("strategies.quant_enabled", [])
     screener = QuantScreener(
         ohlcv_repo=ohlcv_repo,
         max_stocks=quant_cfg.get("max_stocks", 10),
         momentum_days=quant_cfg.get("momentum_days", 20),
         min_avg_volume=quant_cfg.get("min_avg_volume", 500_000),
         min_momentum=quant_cfg.get("min_momentum", 0.0),
+        ichimoku_filter=ichi_on,
     )
     held = [p.symbol for p in engine.positions.all()]
     symbols = screener.scan(universe, held_symbols=held)
@@ -294,12 +301,14 @@ async def _quant_rescan_loop(
 
             ohlcv_repo.bulk_fetch(universe, interval="1d")
 
+            ichi_on = "ichimoku" in settings.get("strategies.quant_enabled", [])
             screener = QuantScreener(
                 ohlcv_repo=ohlcv_repo,
                 max_stocks=quant_cfg.get("max_stocks", 10),
                 momentum_days=quant_cfg.get("momentum_days", 20),
                 min_avg_volume=quant_cfg.get("min_avg_volume", 500_000),
                 min_momentum=quant_cfg.get("min_momentum", 0.0),
+                ichimoku_filter=ichi_on,
             )
             held = [p.symbol for p in engine.positions.all()]
             new_symbols = screener.scan(universe, held_symbols=held)
@@ -310,6 +319,7 @@ async def _quant_rescan_loop(
                     candles = ohlcv_repo.get_candles(sym, interval="1d", limit=60)
                     if candles:
                         engine.prefill_strategies(sym, candles)
+                await engine.prefill_minute_candles(new_symbols)
                 logger.info("quant_rescan.updated", symbols=new_symbols)
         except Exception as e:
             logger.warning("quant_rescan.failed", error=str(e))

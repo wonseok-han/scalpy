@@ -81,6 +81,16 @@
 .strat-chip .strat-name { font-weight: 600; }
 .strat-chip .strat-key { font-size: 0.7rem; color: var(--text-tertiary); }
 .strat-chip .strat-status { font-size: 0.65rem; margin-top: 1px; }
+.strat-chip { position: relative; }
+.strat-tooltip {
+  display: none; position: fixed; background: #1a1f2a; border: 1px solid var(--border);
+  border-radius: var(--radius-sm); padding: 10px 14px; font-size: 0.75rem;
+  color: var(--text-secondary); width: 260px; z-index: 9999;
+  box-shadow: 0 6px 24px rgba(0,0,0,0.6); line-height: 1.5;
+  pointer-events: none; white-space: normal;
+}
+.strat-tooltip .tt-when { color: var(--accent); font-size: 0.7rem; margin-bottom: 4px; }
+.strat-tooltip .tt-desc { font-size: 0.72rem; }
 
 .side-tag { font-size: 0.72rem; font-weight: 600; padding: 2px 8px; border-radius: 5px; }
 .side-tag.buy { background: var(--profit-soft); color: var(--profit); }
@@ -187,6 +197,10 @@
     <div class="status-chip">
       <span class="s-label">퀀트 전략</span>
       <span class="s-value" id="quant-strat-count">0개</span>
+    </div>
+    <div class="status-chip" id="market-condition-chip" style="display:none">
+      <span class="s-label">장세</span>
+      <span class="s-value" id="market-regime">-</span>
     </div>
     <div class="status-chip">
       <span class="s-label">OHLCV</span>
@@ -434,14 +448,49 @@ function _fmtMs(ms){if(ms<=0)return '00:00:00';const t=Math.floor(ms/1000);retur
 _updateMarketTimer();setInterval(_updateMarketTimer,1000);
 
 // ── State ──
-const _QUANT_NAMES=new Set(['momentum','mean_reversion','factor']);
+const _QUANT_NAMES=new Set(['momentum','mean_reversion','factor','ichimoku']);
 const _systemLabels={'synced':'기존 보유','manual':'수동 매매','unknown':'알 수 없음'};
-let _names={},_quantStrats={},_posCount=0;
+let _names={},_quantStrats={},_posCount=0,_marketCondition=null;
 let _allTrades=[],_tradePage=0;const _tradePageSize=10;
 let _allPerfHistory=[],_perfHistPage=0;const _perfHistPageSize=10;
 function pnlType(v){const n=Number(v);return n>0?'up':n<0?'down':'neutral'}
 function stratLabel(k){if(!k)return '-';const s=_quantStrats[k];return s?(s.display_name||k):(_systemLabels[k]||k);}
 
+let _stratTipEl=null;
+function showStratTooltip(e,name){
+  const info=_stratDescriptions[name];if(!info)return;
+  if(!_stratTipEl){_stratTipEl=document.createElement('div');_stratTipEl.className='strat-tooltip';document.body.appendChild(_stratTipEl);}
+  _stratTipEl.innerHTML=`<div class="tt-when">${info.when}</div><div class="tt-desc">${info.desc}</div>`;
+  _stratTipEl.style.display='block';
+  const rect=e.currentTarget.getBoundingClientRect();
+  const tipW=260;
+  let left=rect.left+rect.width/2-tipW/2;
+  if(left<8)left=8;
+  if(left+tipW>window.innerWidth-8)left=window.innerWidth-tipW-8;
+  const top=rect.bottom+8;
+  _stratTipEl.style.left=left+'px';
+  _stratTipEl.style.top=top+'px';
+}
+function hideStratTooltip(){if(_stratTipEl)_stratTipEl.style.display='none';}
+
+const _stratDescriptions = {
+  ichimoku: {
+    when: '상승 추세장',
+    desc: '일목균형표 구름·전환선·기준선 기반 추세 추종. 구름 위 + TK 골든크로스 시 매수, 구름 이탈·기준선 이탈·TK 데드크로스 시 매도. 횡보장에서는 잦은 손절 발생.'
+  },
+  momentum: {
+    when: '강한 상승 모멘텀장',
+    desc: '거래량 급증 + 최근 고점 돌파 시 매수. 강한 추세에서 빠르게 올라타는 전략. 변동성 낮은 횡보장에서는 신호 거의 없음.'
+  },
+  mean_reversion: {
+    when: '횡보·조정장',
+    desc: '볼린저밴드 하단 이탈 후 복귀 시 매수, 상단 돌파 시 매도. 과매도 반등을 노리는 전략. 추세가 강한 하락장에서는 낙폭 확대 위험.'
+  },
+  factor: {
+    when: '종목별 차별화장',
+    desc: '모멘텀·거래량·호가 3가지 팩터를 가중 합산하여 종합 점수 기반 매매. 시장 전체보다 개별 종목 강도에 집중. 범용성 높으나 신호 빈도 낮음.'
+  }
+};
 // ── Quant Strategies ──
 function renderQuantStrats(){
   const el=document.getElementById('quant-strat-list');
@@ -450,9 +499,14 @@ function renderQuantStrats(){
   document.getElementById('strat-badge').textContent=enabledCount+'/'+entries.length;
   document.getElementById('quant-strat-count').textContent=enabledCount+'개';
   if(!entries.length){el.innerHTML='<span style="color:var(--text-tertiary);font-size:0.82rem">퀀트 전략 없음</span>';return;}
+  const rec=(_marketCondition&&_marketCondition.recommend)||[];
   el.innerHTML=entries.map(([name,s])=>{
     const on=s.enabled;
-    return `<span class="strat-chip${on?'':' disabled'}" onclick="toggleStrat('${name}')">
+    const isRec=rec.includes(name);
+    const recBorder=isRec?' style="border-color:#fbbf24;box-shadow:0 0 6px rgba(245,158,11,0.25)"':'';
+    return `<span class="strat-chip${on?'':' disabled'}"${recBorder} onclick="toggleStrat('${name}')" data-strat="${name}"
+      onmouseenter="showStratTooltip(event,'${name}')" onmouseleave="hideStratTooltip()">
+      ${isRec?'<span style="font-size:0.6rem;color:#fbbf24;margin-bottom:1px">★ 추천</span>':''}
       <span class="strat-name">${s.display_name||name}</span>
       <span class="strat-key">${name}</span>
       <span class="strat-status" style="color:${on?'var(--profit)':'var(--text-tertiary)'}">${on?'● 활성':'○ 비활성'}</span>
@@ -496,7 +550,8 @@ function updateStatus(s){
   document.getElementById('pos-count').textContent=s.position_count;
   const inv=s.invested||'0';
   document.getElementById('invested').textContent=inv==='0'?'-':fmt(inv)+'원';
-  const avail=s.available_balance||'-';
+  const invN=Number(inv)||0;const balN=Number(bal)||0;
+  const avail=balN>0?String(balN-invN):'-';
   document.getElementById('available-balance').textContent=avail==='-'?'-':fmt(avail)+'원';
   document.getElementById('pending-orders').textContent='미체결: '+(s.pending_order_count||0)+'건';
   const engineEl=document.getElementById('engine-running');
@@ -507,6 +562,21 @@ function updateStatus(s){
   document.getElementById('btn-start').disabled=s.running;
   document.getElementById('btn-stop').disabled=!s.running;
   if('mock' in s) document.getElementById('mode-tag').textContent=s.mock?'모의투자':'실거래';
+  if(s.market_condition&&s.market_condition.regime){
+    const mc=s.market_condition;
+    const prevRec=_marketCondition?_marketCondition.recommend:null;
+    _marketCondition=mc;
+    if(JSON.stringify(prevRec)!==JSON.stringify(mc.recommend))renderQuantStrats();
+    const chip=document.getElementById('market-condition-chip');
+    chip.style.display='';
+    const regimeMap={bullish:'강세',bearish:'약세',sideways:'횡보'};
+    const colorMap={bullish:'var(--profit)',bearish:'var(--loss)',sideways:'var(--text-secondary)'};
+    const recNames={ichimoku:'일목균형',momentum:'모멘텀 돌파',mean_reversion:'평균회귀',factor:'팩터'};
+    const recStr=mc.recommend.map(r=>recNames[r]||r).join(', ');
+    const el=document.getElementById('market-regime');
+    el.innerHTML=`<span style="color:${colorMap[mc.regime]}">${regimeMap[mc.regime]}</span> <span style="font-size:0.7rem;color:var(--text-tertiary)">${mc.avg_change>=0?'+':''}${mc.avg_change}% · 상승 ${mc.adv_ratio}%</span>`;
+    chip.title=`추천 전략: ${recStr}\n상승 ${mc.adv_count} / 하락 ${mc.dec_count} (총 ${mc.total})`;
+  }
 }
 
 // ── Positions ──
@@ -541,8 +611,9 @@ function renderTradePage(){
     const pnl=t.pnl?Number(t.pnl):null;
     const pct=t.pnl_pct!==''&&t.pnl_pct!==undefined?Number(t.pnl_pct):null;
     const pnlStr=pnl!==null?`<span class="${pnl>=0?'text-profit':'text-loss'}">${pnlSign(pnl)}원${pct!==null?' ('+(pct>0?'+':'')+pct.toFixed(2)+'%)':''}</span>`:'';
-    const reasonMap={signal:'전략',stop_loss:'손절',trailing_stop:'트레일링',stagnation:'정체',market_close:'장마감'};
-    const reasonLabel=reasonMap[t.reason]||t.reason||'';
+    const reasonMap={signal:'전략',stop_loss:'손절',trailing_stop:'트레일링',take_profit:'익절',profit_protect:'수익보호',stagnation:'정체',market_close:'장마감'};
+    const reasonBase=reasonMap[t.reason]||t.reason||'';
+    const reasonLabel=t.reason==='signal'&&t.strategy?stratLabel(t.strategy):reasonBase;
     return `<tr>
       <td>${t.time}</td>
       <td><span class="side-tag ${t.side==='buy'?'buy':'sell'}">${t.side==='buy'?'BUY':'SELL'}</span></td>
@@ -591,6 +662,8 @@ const _PARAM_LABELS={
   window:'BB 윈도우',num_std:'표준편차 배수',
   buy_threshold:'매수 임계값',sell_threshold:'매도 임계값',
   weight_momentum:'모멘텀 가중치',weight_volume:'거래량 가중치',weight_orderbook:'호가 가중치',
+  tenkan_period:'전환선 기간',kijun_period:'기준선 기간',senkou_b_period:'선행스팬B 기간',
+  min_tick_volume:'최소 체결량',
   cooldown_seconds:'쿨다운(초)',stop_loss_ratio:'손절 비율',take_profit_ratio:'익절 비율',
 };
 const _SKIP_KEYS=new Set(['enabled','display_name']);
@@ -720,6 +793,8 @@ async function fetchOhlcv(){
 
 // ── Actions ──
 async function startQuant(){
+  const enabledStrats=Object.entries(_quantStrats).filter(([,s])=>s.enabled);
+  if(!enabledStrats.length){toast('활성화된 전략이 없습니다. 전략을 먼저 선택하세요.','error');return;}
   const btn=document.getElementById('btn-start');btn.classList.add('loading');btn.textContent='시작 중...';
   try{
     const d=await fetch('/api/actions/start',{method:'POST'}).then(r=>r.json());
@@ -772,6 +847,7 @@ async function loadTrades(){
 // ── SSE ──
 let _lastTradeCount=0;
 function applySseState(d){
+  if(d.market_condition&&d.market_condition.regime){d.status=d.status||{};d.status.market_condition=d.market_condition;}
   if(d.status){updateStatus(d.status);const tc=d.status.trade_count||0;if(tc!==_lastTradeCount){_lastTradeCount=tc;loadTrades();}}
   if(d.positions)updatePositions(d.positions);
 }
@@ -783,6 +859,27 @@ async function loadInitial(){
     updateStatus(status);updatePositions(positions);
   }catch(e){console.error('initial load failed',e);}
   loadBalance();loadTrades();_restoreScan();
+  if(!status.market_condition||!status.market_condition.regime){
+    loadMarketCondition();
+  }
+}
+async function loadMarketCondition(){
+  try{
+    const mc=await fetch('/api/market-condition').then(r=>r.json());
+    if(mc.regime){
+      _marketCondition=mc;
+      const chip=document.getElementById('market-condition-chip');
+      chip.style.display='';
+      const regimeMap={bullish:'강세',bearish:'약세',sideways:'횡보'};
+      const colorMap={bullish:'var(--profit)',bearish:'var(--loss)',sideways:'var(--text-secondary)'};
+      const recNames={ichimoku:'일목균형',momentum:'모멘텀 돌파',mean_reversion:'평균회귀',factor:'팩터'};
+      const recStr=mc.recommend.map(r=>recNames[r]||r).join(', ');
+      const el=document.getElementById('market-regime');
+      el.innerHTML=`<span style="color:${colorMap[mc.regime]}">${regimeMap[mc.regime]}</span> <span style="font-size:0.7rem;color:var(--text-tertiary)">${mc.avg_change>=0?'+':''}${mc.avg_change}% · 상승 ${mc.adv_ratio}%</span>`;
+      chip.title=`추천 전략: ${recStr}\n상승 ${mc.adv_count} / 하락 ${mc.dec_count} (총 ${mc.total})`;
+      renderQuantStrats();
+    }
+  }catch(e){console.error('market condition load failed',e);}
 }
 
 const badge=document.getElementById('conn-badge');
@@ -796,8 +893,9 @@ const _spLabels={
   lookback:'관측 윈도우',volume_multiplier:'거래량 배수',breakout_pct:'돌파 비율',
   window:'이평 기간',num_std:'표준편차 배수',buy_threshold:'매수 임계값',
   sell_threshold:'매도 임계값',weight_momentum:'모멘텀 가중치',weight_volume:'거래량 가중치',
-  weight_orderbook:'호가 가중치',cooldown_seconds:'쿨다운(초)',
-  stop_loss_ratio:'전략 손절',take_profit_ratio:'전략 익절',
+  weight_orderbook:'호가 가중치',tenkan_period:'전환선 기간',kijun_period:'기준선 기간',
+  senkou_b_period:'선행스팬B 기간',min_tick_volume:'최소 체결량',
+  cooldown_seconds:'쿨다운(초)',stop_loss_ratio:'전략 손절',take_profit_ratio:'전략 익절',
 };
 let _stratSettings={};
 async function loadSettings(){
@@ -886,7 +984,7 @@ async function persistSettings(){
     else toast('저장 실패: '+(d.error||''),'error');
   }catch(e){toast('오류: '+e.message,'error')}
 }
-const _QUANT_STRAT_NAMES=['momentum','mean_reversion','factor'];
+const _QUANT_STRAT_NAMES=['momentum','mean_reversion','factor','ichimoku'];
 const _SCALP_STRAT_NAMES=['ma_cross','bollinger','rsi','orderbook','vwap'];
 async function applyJson(){
   const ta=document.getElementById('json-import');

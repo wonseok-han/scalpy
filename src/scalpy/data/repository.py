@@ -440,7 +440,8 @@ class TradeRepository:
                         pnl = sell.pnl
                     else:
                         pnl = int((sell.avg_price - buy_avg) * matched_qty - sell.fee - total_buy_fee)
-                    pnl_pct = round((sell.avg_price - buy_avg) / buy_avg * 100, 2) if buy_avg > 0 else 0.0
+                    buy_total = buy_avg * matched_qty + total_buy_fee
+                    pnl_pct = round(pnl / buy_total * 100, 2) if buy_total > 0 else 0.0
                     cross_day = buy_date != sell.order_date
 
                     s = stats.setdefault(strat, {
@@ -527,7 +528,7 @@ class TradeRepository:
                 )
             )
             if existing:
-                return
+                existing.closed_at = dt.now()
             session.add(PositionRow(
                 symbol=symbol, side="buy", quantity=0,
                 avg_price=0, strategy=strategy, opened_at=opened,

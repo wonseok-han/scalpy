@@ -14,12 +14,19 @@ logger = structlog.get_logger()
 _WARN_KEYWORDS = ("SPAC", "관리종목", "투자주의", "투자경고", "투자위험", "거래정지")
 
 _warn_symbols: set[str] = set()
+_market_condition: dict[str, Any] = {}
+
+
+def get_market_condition() -> dict[str, Any]:
+    return _market_condition
 
 _KOSPI_MST_URL = "https://new.real.download.dws.co.kr/common/master/kospi_code.mst.zip"
-_KOSDAQ_MST_URL = "https://new.real.download.dws.co.kr/common/master/kosdaq_code.mst.zip"
+_KOSDAQ_MST_URL = (
+    "https://new.real.download.dws.co.kr/common/master/kosdaq_code.mst.zip"
+)
 
 # 종목마스터 시장경고 코드: 00=해당없음, 01=투자주의, 02=투자경고, 03=투자위험
-_MST_WARN_CODES = {"01", "02", "03"}
+_MST_WARN_CODES = {"03"}
 
 
 def get_warn_symbols() -> set[str]:
@@ -85,6 +92,40 @@ def scan_market_universe(
         _warn_symbols = set(df.loc[warn_mask, "Code"].tolist())
         df = df[~warn_mask]
         logger.info("market_universe.warn_excluded", count=len(_warn_symbols))
+    global _market_condition
+    all_changes = df["ChagesRatio"].dropna()
+    if len(all_changes) > 0:
+        avg_change = float(all_changes.mean())
+        adv = int((all_changes > 0).sum())
+        dec = int((all_changes < 0).sum())
+        total = len(all_changes)
+        adv_ratio = adv / total if total > 0 else 0.5
+        if avg_change > 0.5 and adv_ratio > 0.6:
+            regime = "bullish"
+            recommend = ["ichimoku", "momentum"]
+        elif avg_change < -0.5 and adv_ratio < 0.4:
+            regime = "bearish"
+            recommend = ["mean_reversion"]
+        else:
+            regime = "sideways"
+            recommend = ["mean_reversion", "factor"]
+        _market_condition = {
+            "regime": regime,
+            "avg_change": round(avg_change, 2),
+            "adv_count": adv,
+            "dec_count": dec,
+            "total": total,
+            "adv_ratio": round(adv_ratio * 100, 1),
+            "recommend": recommend,
+        }
+        logger.info(
+            "market.condition",
+            regime=regime,
+            avg_change=round(avg_change, 2),
+            adv_ratio=round(adv_ratio * 100, 1),
+            recommend=recommend,
+        )
+
     df = df[df["Volume"] >= min_volume]
     df = df[df["ChagesRatio"] >= min_change_rate]
     df = df[df["ChagesRatio"] <= max_change_rate]
@@ -98,14 +139,16 @@ def scan_market_universe(
 
     result = []
     for _, row in df.iterrows():
-        result.append({
-            "symbol": row["Code"],
-            "name": row["Name"],
-            "close": int(row["Close"]) if row["Close"] else 0,
-            "change_rate": float(row["ChagesRatio"]) if row["ChagesRatio"] else 0.0,
-            "volume": int(row["Volume"]) if row["Volume"] else 0,
-            "amount": int(row["Amount"]) if row["Amount"] else 0,
-        })
+        result.append(
+            {
+                "symbol": row["Code"],
+                "name": row["Name"],
+                "close": int(row["Close"]) if row["Close"] else 0,
+                "change_rate": float(row["ChagesRatio"]) if row["ChagesRatio"] else 0.0,
+                "volume": int(row["Volume"]) if row["Volume"] else 0,
+                "amount": int(row["Amount"]) if row["Amount"] else 0,
+            }
+        )
 
     master_warned = load_warn_symbols_from_master()
     if master_warned:
@@ -116,7 +159,9 @@ def scan_market_universe(
         if excluded:
             logger.info("market_universe.master_excluded", count=excluded)
 
-    logger.info("market_universe.scanned", filtered=len(df), top_n=top_n, passed=len(result))
+    logger.info(
+        "market_universe.scanned", filtered=len(df), top_n=top_n, passed=len(result)
+    )
     return result
 
 
@@ -137,23 +182,32 @@ class QuantScreener:
         momentum_days: int = 20,
         min_avg_volume: int = 500_000,
         min_momentum: float = 0.0,
+        ichimoku_filter: bool = False,
     ) -> None:
         self._repo = ohlcv_repo
         self._max_stocks = max_stocks
         self._momentum_days = momentum_days
         self._min_avg_volume = min_avg_volume
         self._min_momentum = min_momentum
+        self._ichimoku_filter = ichimoku_filter
         self.symbol_names: dict[str, str] = {}
         self._last_scan: list[dict[str, Any]] = []
 
-    def scan(self, symbols: list[str], held_symbols: list[str] | None = None) -> list[str]:
+    def scan(
+        self, symbols: list[str], held_symbols: list[str] | None = None
+    ) -> list[str]:
         held = set(held_symbols or [])
         warned = get_warn_symbols()
         symbols = [s for s in symbols if s not in warned]
         scored: list[dict[str, Any]] = []
 
+        candle_limit = max(self._momentum_days + 10, 62)
+        cloud_stats = {"above": 0, "inside": 0, "below": 0, "unknown": 0}
+
         for sym in symbols:
-            candles = self._repo.get_candles(sym, interval="1d", limit=self._momentum_days + 10)
+            candles = self._repo.get_candles(
+                sym, interval="1d", limit=candle_limit
+            )
             if len(candles) < self._momentum_days:
                 continue
 
@@ -166,7 +220,15 @@ class QuantScreener:
             if factors["momentum"] < self._min_momentum:
                 continue
 
+            cloud_pos = factors.get("cloud_position", "unknown")
+            cloud_stats[cloud_pos] = cloud_stats.get(cloud_pos, 0) + 1
+            if self._ichimoku_filter and cloud_pos == "below":
+                continue
+
             scored.append({"symbol": sym, **factors})
+
+        if self._ichimoku_filter:
+            logger.info("quant_screener.cloud_filter", **cloud_stats)
 
         if not scored:
             logger.warning("quant_screener.no_candidates")
@@ -177,7 +239,9 @@ class QuantScreener:
         self._last_scan = ranked
 
         available_slots = max(0, self._max_stocks - len(held))
-        new_symbols = [s["symbol"] for s in ranked if s["symbol"] not in held][:available_slots]
+        new_symbols = [s["symbol"] for s in ranked if s["symbol"] not in held][
+            :available_slots
+        ]
         result = list(held) + new_symbols
 
         logger.info(
@@ -190,6 +254,34 @@ class QuantScreener:
 
     def get_last_scan(self) -> list[dict[str, Any]]:
         return self._last_scan
+
+    def _ichimoku_cloud_position(self, candles: list[dict]) -> str:
+        """일봉 기준 일목균형 구름 대비 위치 판정."""
+        highs = [c["high"] for c in candles]
+        lows = [c["low"] for c in candles]
+        closes = [c["close"] for c in candles]
+        n = len(candles)
+        if n < 52:
+            return "unknown"
+
+        def midpoint(data_h: list, data_l: list, period: int) -> float:
+            h = max(data_h[-period:])
+            l = min(data_l[-period:])
+            return (h + l) / 2
+
+        tenkan = midpoint(highs, lows, 9)
+        kijun = midpoint(highs, lows, 26)
+        senkou_a = (tenkan + kijun) / 2
+        senkou_b = midpoint(highs, lows, 52)
+        cloud_top = max(senkou_a, senkou_b)
+        cloud_bottom = min(senkou_a, senkou_b)
+        price = closes[-1]
+
+        if price > cloud_top:
+            return "above"
+        if price < cloud_bottom:
+            return "below"
+        return "inside"
 
     def _calc_factors(self, candles: list[dict]) -> dict[str, Any] | None:
         closes = [c["close"] for c in candles]
@@ -219,7 +311,9 @@ class QuantScreener:
         avg_volume = sum(volumes) / len(volumes) if volumes else 0
 
         # 평균 거래대금 (유동성)
-        avg_turnover = sum(c * v for c, v in zip(closes, volumes)) / len(closes) if closes else 0
+        avg_turnover = (
+            sum(c * v for c, v in zip(closes, volumes)) / len(closes) if closes else 0
+        )
 
         # 거래량 급증: 최근 5일 vs 그 이전 전체
         recent_n = min(5, len(volumes))
@@ -243,6 +337,8 @@ class QuantScreener:
         # RSI
         rsi = self._calc_rsi(closes)
 
+        cloud_pos = self._ichimoku_cloud_position(candles)
+
         return {
             "momentum": round(momentum, 4),
             "volatility": round(volatility, 4),
@@ -253,6 +349,7 @@ class QuantScreener:
             "atr_pct": round(atr_pct, 4),
             "rsi": round(rsi, 1) if rsi is not None else None,
             "close": closes[-1],
+            "cloud_position": cloud_pos,
         }
 
     def _calc_rsi(self, closes: list[int], period: int = 14) -> float | None:
@@ -302,12 +399,15 @@ class QuantScreener:
             # 5) ATR% (변동성 기회): z-score
             z_atr = (s["atr_pct"] - mu_atr) / sd_atr if sd_atr > 0 else 0
 
+            cloud_bonus = 0.3 if self._ichimoku_filter and s.get("cloud_position") == "above" else 0.0
+
             s["score"] = round(
                 z_sharpe * 0.35
                 + z_surge * 0.20
                 + z_turn * 0.15
                 + rsi_score * 0.15
-                + z_atr * 0.15,
+                + z_atr * 0.15
+                + cloud_bonus,
                 4,
             )
 
