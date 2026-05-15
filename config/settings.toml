@@ -30,11 +30,11 @@ symbols = ["005930", "000660"]
 # 종목당 최대 보유 수량
 max_position_size = 100
 # 종목당 최대 투입 비율 (0.3 = 잔고의 30%, 가격 × 수량이 이 비율 초과 시 수량 축소)
-max_position_ratio = 0.3
+max_position_ratio = 0.4
 # 동시 보유 최대 포지션 수 (초과 시 신규 매수 차단)
 max_open_positions = 3
 # 장 마감 시 자동 청산 (true: 스캘핑 기본, false: 퀀트 오버나이트 보유)
-market_close_liquidate = false
+market_close_liquidate = true
 # 손절 비율 (0.003 = 0.3%, 평균단가 대비 하락 시 자동 청산)
 stop_loss_ratio = 0.02
 # 익절 비율 (trailing stop 사용 시 비상 상한으로만 동작)
@@ -42,13 +42,13 @@ take_profit_ratio = 0.03
 # Trailing Stop: 고점 추적 매도
 # 활성화 기준 (0.01 = 1%, 매수가 대비 이 이상 수익 시 고점 추적 시작)
 trailing_activate_ratio = 0.015
-# 매도 기준 (0.02 = 2%, 고점 대비 이 이상 하락 시 매도)
-trailing_stop_ratio = 0.015
+# 매도 기준 (0.01 = 1%, 고점 대비 이 이상 하락 시 매도)
+trailing_stop_ratio = 0.005
 # 수익 보호 스탑: trailing 활성화 전 본전 방어
 # 활성화 기준 (0.005 = 0.5%, peak gain이 이 이상 도달한 적 있으면 보호 시작, 0 = 비활성화)
-profit_protect_activate = 0.005
+profit_protect_activate = 0.008
 # 매도 기준 (0.002 = 0.2%, 현재 수익률이 이 이하로 떨어지면 매도)
-profit_protect_ratio = 0.003
+profit_protect_ratio = 0.005
 # 강제 청산 분할 매도 횟수 (1 = 전량 일괄, 3 = 3분할 매도, 슬리피지 방지)
 force_close_splits = 3
 # 횡보 청산: N시간 보유 후 수익률이 ±threshold 이내이면 자동 청산 (0 = 비활성화)
@@ -97,7 +97,7 @@ chat_id = ""
 [default.strategies]
 # 퀀트 활성 전략
 # 사용 가능: momentum, mean_reversion, factor, ichimoku
-quant_enabled = ["ichimoku"]
+quant_enabled = []
 
 [default.strategies.momentum]
 # 가격/거래량 관측 윈도우 (최근 N틱)
@@ -106,19 +106,23 @@ lookback = 20
 volume_multiplier = 2
 # 고점 돌파 비율 (0.005 = 0.5%, 최근 고점 대비 이 비율 이상 상승 시 진입)
 breakout_pct = 0.01
-cooldown_seconds = 1800
+cooldown_seconds = 300
 # 단기 퀀트용 손절/익절 (1시간~1일 보유 기준)
-stop_loss_ratio = 0.03
+stop_loss_ratio = 0.015
 take_profit_ratio = 0.05
 
 [default.strategies.mean_reversion]
-# 볼린저밴드 관측 윈도우
-window = 20
+# 볼린저밴드 관측 윈도우 (분봉 개수)
+window = 30
 # 표준편차 배수
-num_std = 2
-cooldown_seconds = 1800
+num_std = 2.5
+# 봉 집계 간격 (분, 3 = 3분봉 기준 볼린저밴드)
+candle_minutes = 3
+# 최소 체결량 (이하 틱 무시)
+min_tick_volume = 5
+cooldown_seconds = 600
 # 밴드 복귀 대기 시간 감안 넓은 손절/익절
-stop_loss_ratio = 0.025
+stop_loss_ratio = 0.01
 take_profit_ratio = 0.04
 
 [default.strategies.factor]
@@ -135,7 +139,7 @@ weight_volume = 0.3
 weight_orderbook = 0.3
 cooldown_seconds = 180
 # 복합 팩터 — 가장 넓은 손절/익절
-stop_loss_ratio = 0.025
+stop_loss_ratio = 0.015
 take_profit_ratio = 0.04
 
 [default.strategies.ichimoku]

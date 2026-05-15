@@ -135,28 +135,32 @@ class TradingEngine:
         logger.info("engine.prefilled", symbol=symbol, candles=len(candles))
 
     async def prefill_minute_candles(self, symbols: list[str]) -> None:
-        from scalpy.strategy.ichimoku import IchimokuStrategy
-
-        ichi = None
+        candle_strategies = []
+        need = 0
         for s in self._registry.all():
-            if isinstance(s, IchimokuStrategy) and s.enabled:
-                ichi = s
-                break
-        if ichi is None:
-            logger.debug("engine.ichimoku_prefill_skip", reason="no_enabled_ichimoku")
+            if not s.enabled:
+                continue
+            if hasattr(s, '_candles') and hasattr(s, 'candle_minutes'):
+                candle_strategies.append(s)
+                strat_need = getattr(s, 'senkou_b_period', 0) or getattr(s, 'window', 0)
+                candle_min = getattr(s, 'candle_minutes', 1)
+                need = max(need, (strat_need + 5) * candle_min)
+        if not candle_strategies:
+            logger.debug("engine.candle_prefill_skip", reason="no_candle_strategies")
             return
-        need = ichi.senkou_b_period + 5
-        logger.info("engine.ichimoku_prefill_start", symbols=len(symbols), need=need)
+        names = [s.name for s in candle_strategies]
+        logger.info("engine.candle_prefill_start", symbols=len(symbols), need=need, strategies=names)
         for sym in symbols:
             try:
                 candles = await self._broker.get_minute_candles(sym, need)
                 if candles:
-                    ichi.prefill(sym, candles)
-                    logger.info("engine.ichimoku_prefilled", symbol=sym, candles=len(candles))
+                    for s in candle_strategies:
+                        s.prefill(sym, candles)
+                    logger.info("engine.candle_prefilled", symbol=sym, candles=len(candles))
                 else:
-                    logger.info("engine.ichimoku_prefill_empty", symbol=sym)
+                    logger.info("engine.candle_prefill_empty", symbol=sym)
             except Exception as e:
-                logger.warning("engine.ichimoku_prefill_failed", symbol=sym, error=str(e))
+                logger.warning("engine.candle_prefill_failed", symbol=sym, error=str(e))
 
     async def update_symbols(self, symbols: list[str]) -> None:
         held = {p.symbol for p in self.positions.all()}

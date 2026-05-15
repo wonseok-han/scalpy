@@ -262,6 +262,7 @@ def _build_sse_state() -> dict[str, Any]:
             "symbols": _state.screening_symbols if _state else [],
             "names": _state.symbol_names if _state else {},
         },
+        "market_condition": _state.market_condition if _state else {},
     }
 
 
@@ -313,6 +314,7 @@ async def get_status() -> dict[str, Any]:
         "strategies": strategy_names,
         "strategy_enabled": strategy_enabled,
         "trading_started": _trading_started,
+        "market_condition": _state.market_condition if _state else {},
     }
 
 
@@ -491,6 +493,9 @@ async def _build_universe(quant_cfg: dict, max_price: int = 0) -> tuple[list[str
         symbols = [s["symbol"] for s in stocks]
         names = {s["symbol"]: s["name"] for s in stocks}
         logger.info("quant.market_universe", candidates=len(symbols))
+        from scalpy.screening.quant_screener import get_market_condition
+        if _state:
+            _state.market_condition = get_market_condition()
         return symbols, names
     except Exception as e:
         logger.warning("quant.market_universe_failed", error=str(e))
@@ -739,6 +744,27 @@ async def rescan() -> dict[str, Any]:
         return {"success": True, "symbols": quant_symbols}
     except Exception as e:
         return {"success": False, "error": str(e)}
+
+
+@router.get("/market-condition")
+async def get_market_condition_api() -> dict[str, Any]:
+    """장세 판단 — 스크리닝 전에도 독립 호출 가능."""
+    if _state and _state.market_condition:
+        return _state.market_condition
+    from scalpy.screening.quant_screener import get_market_condition, scan_market_universe
+    quant_cfg = settings.get("quant", {})
+    min_vol = quant_cfg.get("min_avg_volume", 500_000)
+    min_cr = quant_cfg.get("min_change_rate", -2.0)
+    max_cr = quant_cfg.get("max_change_rate", 15.0)
+    top_n = quant_cfg.get("universe_size", 100)
+    try:
+        await asyncio.to_thread(scan_market_universe, min_vol, min_cr, max_cr, 0, top_n)
+        mc = get_market_condition()
+        if _state:
+            _state.market_condition = mc
+        return mc
+    except Exception as e:
+        return {"error": str(e)}
 
 
 @router.post("/strategies/{name}/toggle")

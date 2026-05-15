@@ -39,6 +39,7 @@ class DashboardState:
     last_prev_balance: str = ""
     last_daily_pnl: str = ""
     last_daily_fees: str = ""
+    market_condition: dict[str, Any] = field(default_factory=dict)
 
     def register_handlers(self, bus: EventBus) -> None:
         bus.subscribe("order.filled", self._on_order_filled)

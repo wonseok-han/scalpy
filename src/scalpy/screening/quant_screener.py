@@ -14,6 +14,11 @@ logger = structlog.get_logger()
 _WARN_KEYWORDS = ("SPAC", "관리종목", "투자주의", "투자경고", "투자위험", "거래정지")
 
 _warn_symbols: set[str] = set()
+_market_condition: dict[str, Any] = {}
+
+
+def get_market_condition() -> dict[str, Any]:
+    return _market_condition
 
 _KOSPI_MST_URL = "https://new.real.download.dws.co.kr/common/master/kospi_code.mst.zip"
 _KOSDAQ_MST_URL = (
@@ -87,6 +92,40 @@ def scan_market_universe(
         _warn_symbols = set(df.loc[warn_mask, "Code"].tolist())
         df = df[~warn_mask]
         logger.info("market_universe.warn_excluded", count=len(_warn_symbols))
+    global _market_condition
+    all_changes = df["ChagesRatio"].dropna()
+    if len(all_changes) > 0:
+        avg_change = float(all_changes.mean())
+        adv = int((all_changes > 0).sum())
+        dec = int((all_changes < 0).sum())
+        total = len(all_changes)
+        adv_ratio = adv / total if total > 0 else 0.5
+        if avg_change > 0.5 and adv_ratio > 0.6:
+            regime = "bullish"
+            recommend = ["ichimoku", "momentum"]
+        elif avg_change < -0.5 and adv_ratio < 0.4:
+            regime = "bearish"
+            recommend = ["mean_reversion"]
+        else:
+            regime = "sideways"
+            recommend = ["mean_reversion", "factor"]
+        _market_condition = {
+            "regime": regime,
+            "avg_change": round(avg_change, 2),
+            "adv_count": adv,
+            "dec_count": dec,
+            "total": total,
+            "adv_ratio": round(adv_ratio * 100, 1),
+            "recommend": recommend,
+        }
+        logger.info(
+            "market.condition",
+            regime=regime,
+            avg_change=round(avg_change, 2),
+            adv_ratio=round(adv_ratio * 100, 1),
+            recommend=recommend,
+        )
+
     df = df[df["Volume"] >= min_volume]
     df = df[df["ChagesRatio"] >= min_change_rate]
     df = df[df["ChagesRatio"] <= max_change_rate]

@@ -8,35 +8,85 @@ from scalpy.core.models import Signal
 from scalpy.strategy.base import BaseStrategy
 
 
+class _Candle:
+    __slots__ = ("high", "low", "close", "volume")
+
+    def __init__(self, price: Decimal, volume: int = 0) -> None:
+        self.high = price
+        self.low = price
+        self.close = price
+        self.volume = volume
+
+    def update(self, price: Decimal, volume: int = 0) -> None:
+        if price > self.high:
+            self.high = price
+        if price < self.low:
+            self.low = price
+        self.close = price
+        self.volume += volume
+
+
 class MeanReversionStrategy(BaseStrategy):
     name = "mean_reversion"
     display_name = "평균회귀"
-    description = "Buy when price bounces back from Bollinger lower band"
+    description = "Buy when price bounces back from Bollinger lower band (minute-candle based)"
 
     def __init__(self) -> None:
         self._init_base()
         self.window: int = 20
         self.num_std: float = 2.0
+        self.candle_minutes: int = 3
         self.cooldown_seconds: int = 1800
         self.stop_loss_ratio: float | None = 0.025
         self.take_profit_ratio: float | None = 0.04
-        self._prices: dict[str, deque[Decimal]] = {}
+        self.min_tick_volume: int = 5
+        self._candles: dict[str, deque[_Candle]] = {}
+        self._current_candle: dict[str, _Candle] = {}
+        self._candle_start: dict[str, datetime] = {}
         self._was_below: dict[str, bool] = {}
 
     def reset(self) -> None:
         super().reset()
-        self._prices.clear()
+        self._candles.clear()
+        self._current_candle.clear()
+        self._candle_start.clear()
         self._was_below.clear()
 
-    def _get_prices(self, symbol: str) -> deque[Decimal]:
-        if symbol not in self._prices:
-            self._prices[symbol] = deque(maxlen=self.window)
-        return self._prices[symbol]
+    def _get_candles(self, symbol: str) -> deque[_Candle]:
+        if symbol not in self._candles:
+            self._candles[symbol] = deque(maxlen=self.window + 5)
+        return self._candles[symbol]
 
-    def _bands(self, prices: deque[Decimal]) -> tuple[Decimal, Decimal, Decimal] | None:
-        if len(prices) < self.window:
+    def _rotate_candle(self, symbol: str, price: Decimal, volume: int, now: datetime) -> None:
+        candles = self._get_candles(symbol)
+        start = self._candle_start.get(symbol)
+        interval = self.candle_minutes * 60
+
+        if start is None:
+            self._candle_start[symbol] = now
+            self._current_candle[symbol] = _Candle(price, volume)
+            return
+
+        elapsed = (now - start).total_seconds()
+        if elapsed >= interval:
+            if symbol in self._current_candle:
+                candles.append(self._current_candle[symbol])
+            self._candle_start[symbol] = now
+            self._current_candle[symbol] = _Candle(price, volume)
+        else:
+            if symbol in self._current_candle:
+                self._current_candle[symbol].update(price, volume)
+            else:
+                self._current_candle[symbol] = _Candle(price, volume)
+
+    def _bands(self, symbol: str) -> tuple[Decimal, Decimal, Decimal] | None:
+        candles = list(self._get_candles(symbol))
+        cur = self._current_candle.get(symbol)
+        if cur:
+            candles = candles + [cur]
+        if len(candles) < self.window:
             return None
-        recent = [float(p) for p in prices]
+        recent = [float(c.close) for c in candles[-self.window:]]
         mean = sum(recent) / len(recent)
         variance = sum((x - mean) ** 2 for x in recent) / len(recent)
         std = math.sqrt(variance)
@@ -48,11 +98,13 @@ class MeanReversionStrategy(BaseStrategy):
         return lower, mid, upper
 
     async def on_tick(self, symbol: str, price: Decimal, volume: int) -> Signal | None:
+        if volume < self.min_tick_volume:
+            return None
         self._advance_tick(symbol)
-        prices = self._get_prices(symbol)
-        prices.append(price)
+        now = datetime.now()
+        self._rotate_candle(symbol, price, volume, now)
 
-        bands = self._bands(prices)
+        bands = self._bands(symbol)
         if bands is None:
             return None
 
@@ -68,17 +120,58 @@ class MeanReversionStrategy(BaseStrategy):
             if self._check_cooldown(symbol, "BUY"):
                 dist = float(mid - price) / float(mid) if mid > 0 else 0
                 confidence = min(0.85, 0.6 + dist * 5)
-                return Signal(symbol, Side.BUY, self.name, price, 0, confidence, datetime.now())
+                return Signal(symbol, Side.BUY, self.name, price, 0, confidence, now)
 
         if price > upper and self._check_cooldown(symbol, "SELL"):
-            return Signal(symbol, Side.SELL, self.name, price, 0, 0.7, datetime.now())
+            return Signal(symbol, Side.SELL, self.name, price, 0, 0.7, now)
 
         return None
 
-    def prefill(self, symbol: str, candles: list[dict]) -> None:
-        prices = self._get_prices(symbol)
-        for c in candles[-self.window :]:
-            prices.append(Decimal(str(c["close"])))
+    def prefill(self, symbol: str, candles_data: list[dict]) -> None:
+        if not candles_data:
+            return
+        aggregated = self._aggregate_candles(candles_data)
+        candles = self._get_candles(symbol)
+        for c in aggregated[-(self.window + 5):]:
+            candles.append(c)
+
+    def _aggregate_candles(self, minute_candles: list[dict]) -> list[_Candle]:
+        if self.candle_minutes <= 1:
+            result = []
+            for c in minute_candles:
+                candle = _Candle(Decimal(str(c["close"])))
+                if "high" in c:
+                    candle.high = Decimal(str(c["high"]))
+                if "low" in c:
+                    candle.low = Decimal(str(c["low"]))
+                if "volume" in c:
+                    candle.volume = c["volume"]
+                result.append(candle)
+            return result
+        result = []
+        group: _Candle | None = None
+        for i, c in enumerate(minute_candles):
+            price = Decimal(str(c["close"]))
+            high = Decimal(str(c.get("high", c["close"])))
+            low = Decimal(str(c.get("low", c["close"])))
+            vol = c.get("volume", 0)
+            if group is None:
+                group = _Candle(price, vol)
+                group.high = high
+                group.low = low
+            else:
+                if high > group.high:
+                    group.high = high
+                if low < group.low:
+                    group.low = low
+                group.close = price
+                group.volume += vol
+            if (i + 1) % self.candle_minutes == 0:
+                result.append(group)
+                group = None
+        if group is not None:
+            result.append(group)
+        return result
 
     async def on_orderbook(
         self,
