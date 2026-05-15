@@ -434,7 +434,7 @@ function _fmtMs(ms){if(ms<=0)return '00:00:00';const t=Math.floor(ms/1000);retur
 _updateMarketTimer();setInterval(_updateMarketTimer,1000);
 
 // ── State ──
-const _QUANT_NAMES=new Set(['momentum','mean_reversion','factor']);
+const _QUANT_NAMES=new Set(['momentum','mean_reversion','factor','ichimoku']);
 const _systemLabels={'synced':'기존 보유','manual':'수동 매매','unknown':'알 수 없음'};
 let _names={},_quantStrats={},_posCount=0;
 let _allTrades=[],_tradePage=0;const _tradePageSize=10;
@@ -542,8 +542,9 @@ function renderTradePage(){
     const pnl=t.pnl?Number(t.pnl):null;
     const pct=t.pnl_pct!==''&&t.pnl_pct!==undefined?Number(t.pnl_pct):null;
     const pnlStr=pnl!==null?`<span class="${pnl>=0?'text-profit':'text-loss'}">${pnlSign(pnl)}원${pct!==null?' ('+(pct>0?'+':'')+pct.toFixed(2)+'%)':''}</span>`:'';
-    const reasonMap={signal:'전략',stop_loss:'손절',trailing_stop:'트레일링',stagnation:'정체',market_close:'장마감'};
-    const reasonLabel=reasonMap[t.reason]||t.reason||'';
+    const reasonMap={signal:'전략',stop_loss:'손절',trailing_stop:'트레일링',take_profit:'익절',profit_protect:'수익보호',stagnation:'정체',market_close:'장마감'};
+    const reasonBase=reasonMap[t.reason]||t.reason||'';
+    const reasonLabel=t.reason==='signal'&&t.strategy?stratLabel(t.strategy):reasonBase;
     return `<tr>
       <td>${t.time}</td>
       <td><span class="side-tag ${t.side==='buy'?'buy':'sell'}">${t.side==='buy'?'BUY':'SELL'}</span></td>
@@ -592,6 +593,8 @@ const _PARAM_LABELS={
   window:'BB 윈도우',num_std:'표준편차 배수',
   buy_threshold:'매수 임계값',sell_threshold:'매도 임계값',
   weight_momentum:'모멘텀 가중치',weight_volume:'거래량 가중치',weight_orderbook:'호가 가중치',
+  tenkan_period:'전환선 기간',kijun_period:'기준선 기간',senkou_b_period:'선행스팬B 기간',
+  min_tick_volume:'최소 체결량',
   cooldown_seconds:'쿨다운(초)',stop_loss_ratio:'손절 비율',take_profit_ratio:'익절 비율',
 };
 const _SKIP_KEYS=new Set(['enabled','display_name']);
@@ -797,8 +800,9 @@ const _spLabels={
   lookback:'관측 윈도우',volume_multiplier:'거래량 배수',breakout_pct:'돌파 비율',
   window:'이평 기간',num_std:'표준편차 배수',buy_threshold:'매수 임계값',
   sell_threshold:'매도 임계값',weight_momentum:'모멘텀 가중치',weight_volume:'거래량 가중치',
-  weight_orderbook:'호가 가중치',cooldown_seconds:'쿨다운(초)',
-  stop_loss_ratio:'전략 손절',take_profit_ratio:'전략 익절',
+  weight_orderbook:'호가 가중치',tenkan_period:'전환선 기간',kijun_period:'기준선 기간',
+  senkou_b_period:'선행스팬B 기간',min_tick_volume:'최소 체결량',
+  cooldown_seconds:'쿨다운(초)',stop_loss_ratio:'전략 손절',take_profit_ratio:'전략 익절',
 };
 let _stratSettings={};
 async function loadSettings(){
@@ -887,7 +891,7 @@ async function persistSettings(){
     else toast('저장 실패: '+(d.error||''),'error');
   }catch(e){toast('오류: '+e.message,'error')}
 }
-const _QUANT_STRAT_NAMES=['momentum','mean_reversion','factor'];
+const _QUANT_STRAT_NAMES=['momentum','mean_reversion','factor','ichimoku'];
 const _SCALP_STRAT_NAMES=['ma_cross','bollinger','rsi','orderbook','vwap'];
 async function applyJson(){
   const ta=document.getElementById('json-import');

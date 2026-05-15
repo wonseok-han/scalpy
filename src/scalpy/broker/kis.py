@@ -286,6 +286,89 @@ class KISBroker(BaseBroker):
         )
         return Decimal(str(value))
 
+    async def get_buyable_qty(self, symbol: str, price: Decimal) -> int:
+        if not self._connected or self._api is None:
+            return 0
+        await self._throttle()
+        from pykis import APIRequestParameter
+
+        def _fetch() -> int:
+            params = {
+                "CANO": self._cano,
+                "ACNT_PRDT_CD": self._acnt_prdt_cd,
+                "PDNO": symbol,
+                "ORD_UNPR": str(int(price)),
+                "ORD_DVSN": "01",
+                "CMA_EVLU_AMT_ICLD_YN": "Y",
+                "OVRS_ICLD_YN": "N",
+            }
+            url_path = "/uapi/domestic-stock/v1/trading/inquire-psbl-order"
+            tr_id = "TTTC8908R"
+            req = APIRequestParameter(url_path, tr_id, params)
+            res = self._api._send_get_request(req)
+            output = res.outputs[0]
+            qty = int(output.get("nrcvb_buy_qty", "0"))
+            logger.info("kis_broker.buyable_qty", symbol=symbol, price=str(price), qty=qty)
+            return qty
+
+        try:
+            return await asyncio.to_thread(self._retry_on_token_expired, _fetch)
+        except Exception as e:
+            logger.warning("kis_broker.buyable_qty_failed", symbol=symbol, error=str(e))
+            return 0
+
+    async def get_minute_candles(self, symbol: str, count: int = 60) -> list[dict]:
+        if not self._connected or self._api is None:
+            return []
+        from pykis import APIRequestParameter
+
+        def _fetch_all() -> list[dict]:
+            result: list[dict] = []
+            cursor = "153000"
+            while len(result) < count:
+                params = {
+                    "FID_COND_MRKT_DIV_CODE": "J",
+                    "FID_INPUT_ISCD": symbol,
+                    "FID_INPUT_HOUR_1": cursor,
+                    "FID_PW_DATA_INCU_YN": "Y",
+                    "FID_ETC_CLS_CODE": "",
+                }
+                url_path = "/uapi/domestic-stock/v1/quotations/inquire-time-itemchartprice"
+                tr_id = "FHKST03010200"
+                req = APIRequestParameter(url_path, tr_id, params)
+                res = self._api._send_get_request(req)
+                items = res.outputs[1] if len(res.outputs) > 1 else []
+                if not items:
+                    logger.debug("kis_broker.minute_candles_empty_page", symbol=symbol, cursor=cursor, outputs_len=len(res.outputs))
+                    break
+                for item in items:
+                    hour = item.get("stck_cntg_hour", "")
+                    if hour < "090000":
+                        continue
+                    result.append({
+                        "open": int(item.get("stck_oprc", 0)),
+                        "high": int(item.get("stck_hgpr", 0)),
+                        "low": int(item.get("stck_lwpr", 0)),
+                        "close": int(item.get("stck_prpr", 0)),
+                        "volume": int(item.get("cntg_vol", 0)),
+                        "time": hour,
+                    })
+                earliest = items[-1].get("stck_cntg_hour", "")
+                if earliest <= "090000":
+                    break
+                cursor = earliest
+                time.sleep(0.2)
+            result.sort(key=lambda c: c["time"])
+            return result[-count:]
+
+        try:
+            candles = await asyncio.to_thread(self._retry_on_token_expired, _fetch_all)
+            logger.info("kis_broker.minute_candles_fetched", symbol=symbol, count=len(candles))
+            return candles
+        except Exception as e:
+            logger.warning("kis_broker.minute_candles_failed", symbol=symbol, error=str(e))
+            return []
+
     async def get_trade_history(self) -> list[dict[str, Any]]:
         if not self._connected or self._api is None:
             return []

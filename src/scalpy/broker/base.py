@@ -43,6 +43,13 @@ class BaseBroker(ABC):
         """주문가능금액 (예수금). 기본 구현은 get_balance 위임."""
         return await self.get_balance()
 
+    async def get_buyable_qty(self, symbol: str, price: Decimal) -> int:
+        """종목별 주문가능수량 조회. 기본 구현은 잔고 기반 계산."""
+        balance = await self.get_available_cash()
+        if price <= 0:
+            return 0
+        return int(balance / price)
+
     @abstractmethod
     async def get_trade_history(self) -> list[dict[str, Any]]:
         """당일 체결내역 조회."""
@@ -54,6 +61,10 @@ class BaseBroker(ABC):
     async def get_daily_profit_summary(self) -> dict[str, Any]:
         """당일 실현손익 요약 조회 (실거래만)."""
         return {}
+
+    async def get_minute_candles(self, symbol: str, count: int = 60) -> list[dict]:
+        """당일 1분봉 조회. [{open, high, low, close, volume, time}, ...]"""
+        return []
 
     @abstractmethod
     async def get_top_volume_stocks(self, count: int = 30) -> list[dict[str, Any]]:

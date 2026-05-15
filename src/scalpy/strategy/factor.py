@@ -86,6 +86,12 @@ class FactorStrategy(BaseStrategy):
     def _orderbook_score(self, symbol: str) -> float:
         return self._ob_imbalance.get(symbol, 0.5)
 
+    def _is_below_sma(self, prices: deque[Decimal]) -> bool:
+        if len(prices) < self.lookback:
+            return False
+        sma = sum(float(p) for p in prices) / len(prices)
+        return float(prices[-1]) < sma
+
     async def on_tick(self, symbol: str, price: Decimal, volume: int) -> Signal | None:
         if volume < self.min_tick_volume:
             return None
@@ -115,6 +121,8 @@ class FactorStrategy(BaseStrategy):
 
         if buy_score >= self.buy_threshold and m >= 0.5 and self._check_cooldown(symbol, "BUY"):
             if self._is_short_term_declining(prices) or self._is_near_peak(prices):
+                return None
+            if self._is_below_sma(prices):
                 return None
             confidence = min(0.9, buy_score)
             return Signal(symbol, Side.BUY, self.name, price, 0, confidence, datetime.now())

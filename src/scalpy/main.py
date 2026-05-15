@@ -10,6 +10,7 @@ from scalpy.config import settings
 from scalpy.data.stream import MarketDataStream
 from scalpy.events import EventBus
 from scalpy.strategy.factor import FactorStrategy
+from scalpy.strategy.ichimoku import IchimokuStrategy
 from scalpy.strategy.mean_reversion import MeanReversionStrategy
 from scalpy.strategy.momentum import MomentumStrategy
 from scalpy.strategy.registry import StrategyRegistry
@@ -25,6 +26,7 @@ def build_registry() -> StrategyRegistry:
         MomentumStrategy(),
         MeanReversionStrategy(),
         FactorStrategy(),
+        IchimokuStrategy(),
     ]
     quant_enabled = set(settings.get("strategies.quant_enabled", ["momentum"]))
     for s in all_strategies:
@@ -111,7 +113,7 @@ async def _trade_sync_loop(
             pass
 
 
-_QUANT_STRATEGIES = {"momentum", "mean_reversion", "factor"}
+_QUANT_STRATEGIES = {"momentum", "mean_reversion", "factor", "ichimoku"}
 
 
 def _apply_strategies(registry: StrategyRegistry) -> None:
@@ -165,6 +167,7 @@ async def _start_trading(
 
     await stream.start(symbols)
     _prefill_from_ohlcv(engine, symbols)
+    await engine.prefill_minute_candles(symbols)
     logger.info("scalpy.trading_started", symbols=symbols)
 
 
@@ -312,6 +315,7 @@ async def _quant_rescan_loop(
                     candles = ohlcv_repo.get_candles(sym, interval="1d", limit=60)
                     if candles:
                         engine.prefill_strategies(sym, candles)
+                await engine.prefill_minute_candles(new_symbols)
                 logger.info("quant_rescan.updated", symbols=new_symbols)
         except Exception as e:
             logger.warning("quant_rescan.failed", error=str(e))

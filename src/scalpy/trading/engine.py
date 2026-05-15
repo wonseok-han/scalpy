@@ -134,6 +134,26 @@ class TradingEngine:
             strategy.prefill(symbol, candles)
         logger.info("engine.prefilled", symbol=symbol, candles=len(candles))
 
+    async def prefill_minute_candles(self, symbols: list[str]) -> None:
+        from scalpy.strategy.ichimoku import IchimokuStrategy
+
+        ichi = None
+        for s in self._registry.all():
+            if isinstance(s, IchimokuStrategy) and s.enabled:
+                ichi = s
+                break
+        if ichi is None:
+            return
+        need = ichi.senkou_b_period + 5
+        for sym in symbols:
+            try:
+                candles = await self._broker.get_minute_candles(sym, need)
+                if candles:
+                    ichi.prefill(sym, candles)
+                    logger.info("engine.ichimoku_prefilled", symbol=sym, candles=len(candles))
+            except Exception as e:
+                logger.warning("engine.ichimoku_prefill_failed", symbol=sym, error=str(e))
+
     async def update_symbols(self, symbols: list[str]) -> None:
         held = {p.symbol for p in self.positions.all()}
         self._active_symbols = set(symbols) | held
@@ -264,6 +284,14 @@ class TradingEngine:
         for strategy in self._registry.enabled():
             signal = await strategy.on_tick(symbol, price, volume)
             if signal is not None:
+                logger.info(
+                    "engine.signal_raw",
+                    symbol=signal.symbol,
+                    side=signal.side.value,
+                    strategy=signal.strategy,
+                    confidence=signal.confidence,
+                    price=str(signal.price),
+                )
                 await self._process_signal(signal)
 
     async def on_orderbook(
@@ -352,44 +380,56 @@ class TradingEngine:
         if not self._running:
             return
         if signal.confidence < _MIN_CONFIDENCE:
+            logger.debug("engine.signal_blocked", symbol=signal.symbol, reason="low_confidence", confidence=signal.confidence)
             return
         if self._orders.has_pending_for(signal.symbol):
+            logger.debug("engine.signal_blocked", symbol=signal.symbol, reason="pending_order")
             return
 
         if signal.symbol in self._untradeable:
+            logger.debug("engine.signal_blocked", symbol=signal.symbol, reason="untradeable")
             return
 
         if signal.side == Side.BUY:
             closed_at = self._closed_symbols.get(signal.symbol)
             close_cooldown = settings.get("trading.close_cooldown_seconds", 300)
             if closed_at and time.monotonic() - closed_at < close_cooldown:
+                logger.debug("engine.signal_blocked", symbol=signal.symbol, reason="close_cooldown")
                 return
             rejected_at = self._rejected_symbols.get(signal.symbol)
             if rejected_at and time.monotonic() - rejected_at < _REJECTED_COOLDOWN:
+                logger.debug("engine.signal_blocked", symbol=signal.symbol, reason="rejected_cooldown")
                 return
             now_kst = datetime.now(_KST).time()
             if _CUTOFF_BUY <= now_kst <= _MARKET_END:
                 logger.info("engine.buy_blocked_market_closing", symbol=signal.symbol)
                 return
             if self.positions.get(signal.symbol) is not None:
+                logger.debug("engine.signal_blocked", symbol=signal.symbol, reason="already_holding")
                 return
             if len(self.positions.all()) >= self._risk.max_open_positions:
+                logger.debug("engine.signal_blocked", symbol=signal.symbol, reason="max_positions")
                 return
 
-        balance = await self.get_cached_balance()
-        available = balance - self._pending_buy_cost
-        if available <= 0 and signal.side == Side.BUY:
-            return
-        positions_value = sum(
-            p.current_price * p.quantity for p in self.positions.all()
-        )
-        total_asset = balance + positions_value
-        qty = self._risk.get_max_position_size(
-            signal.symbol, available, signal.price, total_asset=total_asset,
-        )
-
+        qty = 0
         sell_pos: Position | None = None
-        if signal.side == Side.SELL:
+
+        if signal.side == Side.BUY:
+            try:
+                broker_qty = await self._broker.get_buyable_qty(signal.symbol, signal.price)
+            except Exception as e:
+                logger.warning("engine.buyable_qty_failed", symbol=signal.symbol, error=str(e))
+                return
+            if broker_qty <= 0:
+                logger.info("engine.signal_blocked", symbol=signal.symbol, reason="zero_buyable_qty")
+                return
+            qty = min(broker_qty, self._risk.max_position_size)
+            await self.get_cached_balance()
+            total_asset = self._cached_balance
+            if total_asset > 0:
+                cap = int(total_asset * Decimal(str(self._risk.max_position_ratio)) / signal.price)
+                qty = min(qty, cap)
+        else:
             pos = self.positions.get(signal.symbol)
             if pos is None or pos.quantity == 0:
                 return
@@ -409,9 +449,6 @@ class TradingEngine:
             return
 
         order = self._orders.signal_to_order(signal, qty)
-
-        if signal.side == Side.BUY and not self._risk.validate_order(order, available):
-            return
 
         if self._bus:
             await self._bus.emit(
@@ -533,6 +570,8 @@ class TradingEngine:
             await self._force_close(pos, reason="stop_loss")
         elif self._risk.check_trailing_stop(pos):
             await self._force_close(pos, reason="trailing_stop")
+        elif self._risk.check_take_profit(pos, _tp_ratio):
+            await self._force_close(pos, reason="take_profit")
         elif self._risk.check_profit_protect(pos):
             await self._force_close(pos, reason="profit_protect")
         elif self._risk.check_stagnation(pos):

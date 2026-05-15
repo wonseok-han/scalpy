@@ -456,7 +456,7 @@ async def cancel_all_orders() -> dict[str, Any]:
         return {"success": False, "error": str(e)}
 
 
-_QUANT_STRATEGIES = {"momentum", "mean_reversion", "factor"}
+_QUANT_STRATEGIES = {"momentum", "mean_reversion", "factor", "ichimoku"}
 
 
 def _apply_strategies() -> None:

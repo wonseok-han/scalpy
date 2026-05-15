@@ -41,14 +41,14 @@ stop_loss_ratio = 0.02
 take_profit_ratio = 0.03
 # Trailing Stop: 고점 추적 매도
 # 활성화 기준 (0.01 = 1%, 매수가 대비 이 이상 수익 시 고점 추적 시작)
-trailing_activate_ratio = 0.01
+trailing_activate_ratio = 0.015
 # 매도 기준 (0.02 = 2%, 고점 대비 이 이상 하락 시 매도)
-trailing_stop_ratio = 0.02
+trailing_stop_ratio = 0.015
 # 수익 보호 스탑: trailing 활성화 전 본전 방어
-# 활성화 기준 (0.003 = 0.3%, peak gain이 이 이상 도달한 적 있으면 보호 시작, 0 = 비활성화)
-profit_protect_activate = 0.003
-# 매도 기준 (0.001 = 0.1%, 현재 수익률이 이 이하로 떨어지면 매도)
-profit_protect_ratio = 0.001
+# 활성화 기준 (0.005 = 0.5%, peak gain이 이 이상 도달한 적 있으면 보호 시작, 0 = 비활성화)
+profit_protect_activate = 0.005
+# 매도 기준 (0.002 = 0.2%, 현재 수익률이 이 이하로 떨어지면 매도)
+profit_protect_ratio = 0.003
 # 강제 청산 분할 매도 횟수 (1 = 전량 일괄, 3 = 3분할 매도, 슬리피지 방지)
 force_close_splits = 3
 # 횡보 청산: N시간 보유 후 수익률이 ±threshold 이내이면 자동 청산 (0 = 비활성화)
@@ -62,7 +62,7 @@ close_cooldown_seconds = 180
 
 [default.quant]
 # 퀀트 스크리닝 설정
-max_stocks = 10
+max_stocks = 20
 # 모멘텀 계산 기간 (일, 단기 퀀트 기준 10일)
 momentum_days = 10
 # 최소 평균 거래량 (10일 평균)
@@ -96,8 +96,8 @@ chat_id = ""
 
 [default.strategies]
 # 퀀트 활성 전략
-# 사용 가능: momentum, mean_reversion, factor
-quant_enabled = ["factor"]
+# 사용 가능: momentum, mean_reversion, factor, ichimoku
+quant_enabled = ["ichimoku"]
 
 [default.strategies.momentum]
 # 가격/거래량 관측 윈도우 (최근 N틱)
@@ -135,5 +135,21 @@ weight_volume = 0.3
 weight_orderbook = 0.3
 cooldown_seconds = 180
 # 복합 팩터 — 가장 넓은 손절/익절
+stop_loss_ratio = 0.025
+take_profit_ratio = 0.04
+
+[default.strategies.ichimoku]
+# 전환선 기간 (봉 수)
+tenkan_period = 9
+# 기준선 기간 (봉 수)
+kijun_period = 26
+# 선행스팬B 기간 (봉 수, 구름 두께 결정)
+senkou_b_period = 52
+# 봉 집계 간격 (분, 1 = 1분봉 기준 일목균형표)
+candle_minutes = 1
+# 최소 체결량 (이하 틱 무시)
+min_tick_volume = 5
+cooldown_seconds = 300
+# 추세 추종 — 넓은 손절/익절
 stop_loss_ratio = 0.025
 take_profit_ratio = 0.04
