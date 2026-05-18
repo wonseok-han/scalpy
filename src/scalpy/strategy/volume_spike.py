@@ -2,9 +2,13 @@ from collections import deque
 from datetime import datetime
 from decimal import Decimal
 
+import structlog
+
 from scalpy.core.enums import Side
 from scalpy.core.models import Signal
 from scalpy.strategy.base import BaseStrategy
+
+logger = structlog.get_logger()
 
 
 class _Candle:
@@ -25,19 +29,22 @@ class _Candle:
         self.close = price
         self.volume += volume
 
+    @property
+    def is_bullish(self) -> bool:
+        return self.close >= self.open
+
 
 class VolumeSpikeStrategy(BaseStrategy):
     name = "volume_spike"
     display_name = "거래량폭발"
-    description = "Detect volume explosion + rapid price surge for quick momentum entry"
+    description = "Volume surge + momentum breakout: ride the spike"
 
     def __init__(self) -> None:
         self._init_base()
         self.baseline_window: int = 10
-        self.spike_ratio: float = 3.0
-        self.min_surge_pct: float = 0.005
-        self.max_surge_pct: float = 0.08
+        self.spike_ratio: float = 1.0
         self.candle_minutes: int = 1
+        self.lookback: int = 5
         self.cooldown_seconds: int = 120
         self.stop_loss_ratio: float | None = 0.015
         self.take_profit_ratio: float | None = None
@@ -54,7 +61,7 @@ class VolumeSpikeStrategy(BaseStrategy):
 
     def _get_candles(self, symbol: str) -> deque[_Candle]:
         if symbol not in self._candles:
-            self._candles[symbol] = deque(maxlen=self.baseline_window + 5)
+            self._candles[symbol] = deque(maxlen=self.baseline_window + self.lookback + 5)
         return self._candles[symbol]
 
     def _rotate_candle(self, symbol: str, price: Decimal, volume: int, now: datetime) -> None:
@@ -94,35 +101,47 @@ class VolumeSpikeStrategy(BaseStrategy):
         if cur is None or cur.volume == 0:
             return None
 
-        baseline = candles[-self.baseline_window:]
+        recent = candles[-self.lookback:] if len(candles) >= self.lookback else candles
+        baseline = candles[:self.baseline_window]
+
+        # 1) 거래량 활발: 최근 평균 거래량 >= baseline 평균
         avg_vol = sum(c.volume for c in baseline) / len(baseline)
         if avg_vol <= 0:
             return None
-
-        vol_ratio = cur.volume / avg_vol
+        recent_avg_vol = sum(c.volume for c in recent) / len(recent)
+        vol_ratio = recent_avg_vol / avg_vol
         if vol_ratio < self.spike_ratio:
             return None
 
-        if cur.open <= 0:
+        # 2) 현재 캔들이 양봉 (상승 중)
+        if not cur.is_bullish:
+            logger.info("volume_spike.reject", symbol=symbol, reason="bearish",
+                        open=str(cur.open), close=str(cur.close), vol_ratio=round(vol_ratio, 2))
             return None
-        surge_pct = float(cur.close - cur.open) / float(cur.open)
 
-        if surge_pct < self.min_surge_pct:
+        # 3) 현재 캔들이 직전 캔들 대비 상승 중 (급등 올라타기)
+        prev = candles[-1] if candles else None
+        if prev and cur.close < prev.close:
             return None
-        if surge_pct > self.max_surge_pct:
+
+        # 4) 현재 캔들에 거래가 있는지만 확인
+        if cur.volume <= 0:
             return None
 
         if not self._check_cooldown(symbol, "BUY"):
             return None
 
-        confidence = min(0.9, 0.5 + (vol_ratio - self.spike_ratio) * 0.05 + surge_pct * 10)
+        confidence = min(0.9, 0.6 + vol_ratio * 0.05)
+        logger.info("volume_spike.signal", symbol=symbol, price=str(price),
+                     vol_ratio=round(vol_ratio, 2), cur_vol=cur.volume)
         return Signal(symbol, Side.BUY, self.name, price, 0, confidence, now)
 
     def prefill(self, symbol: str, candles_data: list[dict]) -> None:
         if not candles_data:
             return
         candles = self._get_candles(symbol)
-        for c in candles_data[-(self.baseline_window + 5):]:
+        max_candles = self.baseline_window + self.lookback + 5
+        for c in candles_data[-max_candles:]:
             candle = _Candle(Decimal(str(c["close"])))
             if "open" in c:
                 candle.open = Decimal(str(c["open"]))

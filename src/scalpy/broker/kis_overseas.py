@@ -154,6 +154,10 @@ class KISOverseasBroker(BaseBroker):
                 time.sleep(0.5)
                 resp = requests.post(url, headers=self._headers(tr_id), json=body, timeout=10)
             else:
+                logger.warning("kis_overseas.post_error",
+                               status=resp.status_code, tr_id=tr_id,
+                               msg=rj.get("msg1", ""), msg_cd=msg_cd,
+                               body=body)
                 resp.raise_for_status()
         return resp.json()
 
@@ -174,13 +178,13 @@ class KISOverseasBroker(BaseBroker):
 
         await self._throttle()
         try:
-            if order.side == Side.BUY:
-                tr_id = "TTTT1002U"
+            if self._mock:
+                tr_id = "VTTT1002U" if order.side == Side.BUY else "VTTT1001U"
             else:
-                tr_id = "TTTT1006U"
+                tr_id = "TTTT1002U" if order.side == Side.BUY else "TTTT1006U"
 
             exg = self._get_exchange(order.symbol)
-            price_str = f"{float(order.price):.2f}" if order.order_type == OrderType.LIMIT else "0"
+            price_str = f"{float(order.price):.2f}" if order.price > 0 else "0"
             body = {
                 "CANO": self._cano,
                 "ACNT_PRDT_CD": self._acnt_prdt_cd,
@@ -199,15 +203,18 @@ class KISOverseasBroker(BaseBroker):
             )
 
             if data.get("rt_cd") == "0":
-                order.status = OrderStatus.FILLED
-                order.filled_at = datetime.now()
+                order.status = OrderStatus.PENDING
                 order.order_id = data.get("output", {}).get("ODNO", "")
-                logger.info("kis_overseas.order_filled",
+                logger.info("kis_overseas.order_submitted",
                             symbol=order.symbol, side=order.side.value,
-                            qty=order.quantity, price=price_str)
+                            qty=order.quantity, price=price_str,
+                            order_id=order.order_id)
             else:
                 order.status = OrderStatus.REJECTED
                 order.reject_reason = data.get("msg1", "unknown")
+                logger.warning("kis_overseas.order_rejected_detail",
+                               symbol=order.symbol, tr_id=tr_id, exchange=exg,
+                               price=price_str, body=body)
                 logger.warning("kis_overseas.order_rejected",
                                symbol=order.symbol, msg=data.get("msg1", ""))
         except Exception as e:
@@ -217,27 +224,39 @@ class KISOverseasBroker(BaseBroker):
 
         return order
 
-    async def cancel_order(self, order_id: str) -> bool:
+    async def _cancel_order_detail(self, order_id: str, symbol: str, exchange: str, org_no: str) -> bool:
         if not self._connected:
             return False
         await self._throttle()
         try:
+            tr_id = "VTTT1004U" if self._mock else "TTTT1004U"
             body = {
                 "CANO": self._cano,
                 "ACNT_PRDT_CD": self._acnt_prdt_cd,
-                "OVRS_EXCG_CD": self._exchange,
+                "OVRS_EXCG_CD": exchange,
+                "PDNO": symbol,
                 "ORGN_ODNO": order_id,
                 "RVSE_CNCL_DVSN_CD": "02",
                 "ORD_QTY": "0",
                 "OVRS_ORD_UNPR": "0",
+                "KRX_FWDG_ORD_ORGNO": org_no,
             }
             data = await asyncio.to_thread(
-                self._post, "/uapi/overseas-stock/v1/trading/order-rvsecncl", "TTTT1004U", body
+                self._post, "/uapi/overseas-stock/v1/trading/order-rvsecncl", tr_id, body
             )
-            return data.get("rt_cd") == "0"
+            if data.get("rt_cd") == "0":
+                logger.info("kis_overseas.order_cancelled", symbol=symbol, order_id=order_id)
+                return True
+            else:
+                logger.warning("kis_overseas.cancel_rejected", symbol=symbol,
+                               order_id=order_id, msg=data.get("msg1", ""))
+                return False
         except Exception as e:
             logger.error("kis_overseas.cancel_failed", order_id=order_id, error=str(e))
             return False
+
+    async def cancel_order(self, order_id: str) -> bool:
+        return await self._cancel_order_detail(order_id, "", self._exchange, "")
 
     async def cancel_all_orders(self) -> int:
         if not self._connected:
@@ -260,7 +279,10 @@ class KISOverseasBroker(BaseBroker):
                 orders = data.get("output", [])
                 for o in orders:
                     odno = o.get("odno", "")
-                    if odno and await self.cancel_order(odno):
+                    symbol = o.get("pdno", "")
+                    excg = o.get("ovrs_excg_cd", exg_code)
+                    org_no = o.get("ord_gno_brno", "")
+                    if odno and await self._cancel_order_detail(odno, symbol, excg, org_no):
                         cancelled += 1
             except Exception as e:
                 logger.warning("kis_overseas.cancel_all_partial", exchange=exg_code, error=str(e))

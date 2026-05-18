@@ -534,7 +534,7 @@ async def quant_scan(refresh: bool = False) -> dict[str, Any]:
         from scalpy.screening.us_screener import USQuantScreener, scan_us_market
 
         broker = _engine_ref._broker
-        stocks = await scan_us_market(broker, count=50)
+        stocks = await scan_us_market(broker, count=150)
         if not stocks:
             return {"data": []}
 
@@ -634,7 +634,7 @@ async def _quant_start() -> list[str]:
 
     selected = await _do_us_scan()
 
-    rescan_min = settings.get("quant.rescan_interval_minutes", 30)
+    rescan_min = settings.get("quant.us_rescan_interval_minutes", 10)
     if rescan_min > 0 and (not _quant_rescan_task or _quant_rescan_task.done()):
         _quant_rescan_task = asyncio.create_task(_quant_rescan_loop(rescan_min))
 
@@ -650,7 +650,7 @@ async def _do_us_scan() -> list[str]:
     from scalpy.screening.us_screener import USQuantScreener, scan_us_market, get_market_condition
 
     broker = _engine_ref._broker
-    stocks = await scan_us_market(broker, count=50)
+    stocks = await scan_us_market(broker, count=150)
     if not stocks:
         return []
 
@@ -669,11 +669,16 @@ async def _do_us_scan() -> list[str]:
     if _state:
         _state.market_condition = get_market_condition()
 
+    ichi_on = any(
+        s.name == "ichimoku" and s.enabled
+        for s in _engine_ref._registry.all()
+    ) if _engine_ref else False
     screener = USQuantScreener(
         max_stocks=settings.get("quant.max_stocks", 10),
         momentum_days=settings.get("quant.momentum_days", 10),
         min_avg_volume=settings.get("quant.min_avg_volume", 100_000),
         min_momentum=settings.get("quant.min_momentum", 0.0),
+        ichimoku_filter=ichi_on,
     )
     held = [p.symbol for p in _engine_ref.positions.all()]
     selected = screener.scan(universe, held_symbols=held, live_data=live_data)
@@ -706,6 +711,8 @@ async def _quant_rescan_loop(interval_minutes: int) -> None:
                         _stream_ref.set_symbol_exchanges(_engine_ref._broker._symbol_exchange)
                     await _stream_ref.update_subscriptions(new_symbols)
                 await _engine_ref.update_symbols(new_symbols)
+                if _state:
+                    _state.screening_symbols = new_symbols
                 logger.info("us_quant_rescan.updated", symbols=new_symbols)
                 if _bus:
                     names = _state.symbol_names if _state else {}

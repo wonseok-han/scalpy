@@ -131,6 +131,7 @@ class USMarketDataStream:
         self._approval_key: str = ""
         self._recv_task: asyncio.Task[None] | None = None
         self._stopping = False
+        self._last_tick: dict[str, tuple[Decimal, int]] = {}
 
     def on_tick(self, callback: TickCallback) -> None:
         self._tick_callbacks.append(callback)
@@ -313,18 +314,23 @@ class USMarketDataStream:
             volume = int(float(fields[18])) if len(fields) > 18 and fields[18] else 0
         except (ValueError, IndexError):
             volume = 0
+        last = self._last_tick.get(symbol)
+        if last and last[0] == price and last[1] == volume:
+            return
+        self._last_tick[symbol] = (price, volume)
         await self.emit_tick(symbol, price, volume)
 
     async def _on_orderbook_data(self, data: str) -> None:
+        """HDFSASP0 필드: SYMB^ZDIV^XYMD^XHMS^KYMD^KHMS^BVOL^AVOL^BDVL^ADVL^PBID1^PASK1^VBID1^VASK1^..."""
         fields = data.split("^")
         symbol = self._strip_prefix(fields[0])
         asks: list[tuple[Decimal, int]] = []
         bids: list[tuple[Decimal, int]] = []
-        if len(fields) > 15:
-            ask_price = Decimal(fields[15]) if fields[15] else Decimal("0")
-            ask_vol = int(float(fields[17])) if len(fields) > 17 and fields[17] else 0
-            bid_price = Decimal(fields[14]) if fields[14] else Decimal("0")
-            bid_vol = int(float(fields[16])) if len(fields) > 16 and fields[16] else 0
+        if len(fields) > 13:
+            bid_price = Decimal(fields[10]) if fields[10] else Decimal("0")
+            ask_price = Decimal(fields[11]) if fields[11] else Decimal("0")
+            bid_vol = int(float(fields[12])) if fields[12] else 0
+            ask_vol = int(float(fields[13])) if fields[13] else 0
             if ask_price > 0:
                 asks.append((ask_price, ask_vol))
             if bid_price > 0:
