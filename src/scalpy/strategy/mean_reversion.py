@@ -40,10 +40,12 @@ class MeanReversionStrategy(BaseStrategy):
         self.stop_loss_ratio: float | None = 0.025
         self.take_profit_ratio: float | None = 0.04
         self.min_tick_volume: int = 5
+        self.open_grace_candles: int = 5
         self._candles: dict[str, deque[_Candle]] = {}
         self._current_candle: dict[str, _Candle] = {}
         self._candle_start: dict[str, datetime] = {}
         self._was_below: dict[str, bool] = {}
+        self._realtime_candle_count: dict[str, int] = {}
 
     def reset(self) -> None:
         super().reset()
@@ -51,6 +53,7 @@ class MeanReversionStrategy(BaseStrategy):
         self._current_candle.clear()
         self._candle_start.clear()
         self._was_below.clear()
+        self._realtime_candle_count.clear()
 
     def _get_candles(self, symbol: str) -> deque[_Candle]:
         if symbol not in self._candles:
@@ -71,6 +74,7 @@ class MeanReversionStrategy(BaseStrategy):
         if elapsed >= interval:
             if symbol in self._current_candle:
                 candles.append(self._current_candle[symbol])
+                self._realtime_candle_count[symbol] = self._realtime_candle_count.get(symbol, 0) + 1
             self._candle_start[symbol] = now
             self._current_candle[symbol] = _Candle(price, volume)
         else:
@@ -117,7 +121,8 @@ class MeanReversionStrategy(BaseStrategy):
 
         if was_below and price >= lower:
             self._was_below[symbol] = False
-            if self._check_cooldown(symbol, "BUY"):
+            rt = self._realtime_candle_count.get(symbol, 0)
+            if rt >= self.open_grace_candles and self._check_cooldown(symbol, "BUY"):
                 dist = float(mid - price) / float(mid) if mid > 0 else 0
                 confidence = min(0.85, 0.6 + dist * 5)
                 return Signal(symbol, Side.BUY, self.name, price, 0, confidence, now)

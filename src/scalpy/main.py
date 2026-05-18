@@ -7,6 +7,7 @@ import structlog
 from scalpy.broker.base import BaseBroker
 from scalpy.broker.mock import MockBroker
 from scalpy.config import settings
+from scalpy.core.market import KR_MARKET, US_MARKET
 from scalpy.data.stream import MarketDataStream
 from scalpy.events import EventBus
 from scalpy.strategy.factor import FactorStrategy
@@ -48,9 +49,22 @@ def build_registry() -> StrategyRegistry:
 def build_broker() -> BaseBroker:
     mock = settings.get("mock", True)
     app_key = settings.get("kis_app_key", "")
+    market = settings.get("market", "kr")
 
     if not app_key:
         return MockBroker()
+
+    if market == "us":
+        from scalpy.broker.kis_overseas import KISOverseasBroker
+
+        exchange = settings.get("us_trading.exchange", "NASD")
+        return KISOverseasBroker(
+            app_key=app_key,
+            app_secret=settings.get("kis_app_secret", ""),
+            account_no=settings.get("kis_account_no", ""),
+            mock=mock,
+            exchange=exchange,
+        )
 
     from scalpy.broker.kis import KISBroker
 
@@ -64,7 +78,9 @@ def build_broker() -> BaseBroker:
 
 def build_engine(registry: StrategyRegistry) -> tuple[TradingEngine, BaseBroker]:
     broker = build_broker()
-    trading = settings.get("trading", {})
+    market = settings.get("market", "kr")
+    trading_key = "us_trading" if market == "us" else "trading"
+    trading = settings.get(trading_key, {})
     risk = RiskManager(
         stop_loss_ratio=trading.get("stop_loss_ratio", 0.02),
         take_profit_ratio=trading.get("take_profit_ratio", 0.03),
@@ -78,7 +94,8 @@ def build_engine(registry: StrategyRegistry) -> tuple[TradingEngine, BaseBroker]
         profit_protect_activate=trading.get("profit_protect_activate", 0),
         profit_protect_ratio=trading.get("profit_protect_ratio", 0.001),
     )
-    return TradingEngine(broker, registry, risk), broker
+    market_config = US_MARKET if market == "us" else KR_MARKET
+    return TradingEngine(broker, registry, risk, market_config=market_config), broker
 
 
 _TRADE_SYNC_INTERVAL = 60
@@ -163,7 +180,10 @@ async def _start_trading(
         symbols.extend(quant_symbols)
 
     if not symbols:
-        symbols = settings.get("trading.symbols", ["005930"])
+        market = settings.get("market", "kr")
+        default_sym = ["AAPL"] if market == "us" else ["005930"]
+        trading_key = "us_trading" if market == "us" else "trading"
+        symbols = settings.get(f"{trading_key}.symbols", default_sym)
 
     await stream.start(symbols)
     _prefill_from_ohlcv(engine, symbols)
@@ -195,6 +215,7 @@ async def _quant_scan(
         pass
 
     universe = quant_cfg.get("universe", [])
+    live_data: dict[str, dict] = {}
     if not universe:
         try:
             from scalpy.screening.quant_screener import scan_market_universe
@@ -204,6 +225,10 @@ async def _quant_scan(
             top_n = quant_cfg.get("universe_size", 100)
             stocks = scan_market_universe(min_vol, min_cr, max_cr, 0, top_n, max_price)
             universe = [s["symbol"] for s in stocks]
+            live_data = {
+                s["symbol"]: {"change_rate": s["change_rate"], "volume": s["volume"], "amount": s["amount"]}
+                for s in stocks
+            }
             logger.info("quant.market_universe", candidates=len(universe))
         except Exception as e:
             logger.warning("quant.market_universe_failed", error=str(e))
@@ -230,7 +255,7 @@ async def _quant_scan(
         ichimoku_filter=ichi_on,
     )
     held = [p.symbol for p in engine.positions.all()]
-    symbols = screener.scan(universe, held_symbols=held)
+    symbols = screener.scan(universe, held_symbols=held, live_data=live_data or None)
 
     scan_results = screener.get_last_scan()
     if scan_results:
@@ -281,6 +306,7 @@ async def _quant_rescan_loop(
                 pass
 
             universe = list(quant_cfg.get("universe", []))
+            live_data: dict[str, dict] = {}
             if not universe:
                 try:
                     from scalpy.screening.quant_screener import scan_market_universe
@@ -293,6 +319,10 @@ async def _quant_rescan_loop(
                         max_price,
                     )
                     universe = [s["symbol"] for s in stocks]
+                    live_data = {
+                        s["symbol"]: {"change_rate": s["change_rate"], "volume": s["volume"], "amount": s["amount"]}
+                        for s in stocks
+                    }
                 except Exception:
                     universe = list(engine._active_symbols)
 
@@ -311,7 +341,7 @@ async def _quant_rescan_loop(
                 ichimoku_filter=ichi_on,
             )
             held = [p.symbol for p in engine.positions.all()]
-            new_symbols = screener.scan(universe, held_symbols=held)
+            new_symbols = screener.scan(universe, held_symbols=held, live_data=live_data or None)
             if new_symbols:
                 await stream.update_subscriptions(new_symbols)
                 await engine.update_symbols(new_symbols)
@@ -349,13 +379,27 @@ async def run() -> None:
     registry = build_registry()
     engine, broker = build_engine(registry)
     mock = settings.get("mock", True)
+    market = settings.get("market", "kr")
     hts_id = settings.get("kis_hts_id", "")
-    stream = MarketDataStream(
-        app_key=settings.get("kis_app_key", ""),
-        app_secret=settings.get("kis_app_secret", ""),
-        mock=mock,
-        hts_id=hts_id,
-    )
+
+    if market == "us":
+        from scalpy.data.us_stream import USMarketDataStream
+
+        exchange = settings.get("us_trading.exchange", "NASD")
+        stream = USMarketDataStream(
+            app_key=settings.get("kis_app_key", ""),
+            app_secret=settings.get("kis_app_secret", ""),
+            mock=mock,
+            hts_id=hts_id,
+            exchange=exchange,
+        )
+    else:
+        stream = MarketDataStream(
+            app_key=settings.get("kis_app_key", ""),
+            app_secret=settings.get("kis_app_secret", ""),
+            mock=mock,
+            hts_id=hts_id,
+        )
 
     stream.on_tick(engine.on_tick)
     stream.on_orderbook(engine.on_orderbook)

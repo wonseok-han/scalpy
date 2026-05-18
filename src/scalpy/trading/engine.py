@@ -1,8 +1,6 @@
 import asyncio
 import time
-import zoneinfo
 from datetime import datetime
-from datetime import time as dt_time
 from decimal import Decimal
 from typing import Any
 
@@ -11,6 +9,7 @@ import structlog
 from scalpy.broker.base import BaseBroker
 from scalpy.config import settings
 from scalpy.core.enums import OrderStatus, Side
+from scalpy.core.market import KR_MARKET, MarketConfig
 from scalpy.core.models import Position, Signal
 from scalpy.events.bus import EventBus
 from scalpy.strategy.registry import StrategyRegistry
@@ -28,12 +27,6 @@ _MIN_CONFIDENCE = 0.5
 _REJECTED_COOLDOWN = 60
 _SPLIT_SELL_DELAY = 1.0
 _UNFILLED_CANCEL_INTERVAL = 60
-_KST = zoneinfo.ZoneInfo("Asia/Seoul")
-_MARKET_OPEN = dt_time(9, 0)
-_CUTOFF_BUY = dt_time(15, 15)
-_CUTOFF_CLOSE = dt_time(15, 18)
-_MARKET_END = dt_time(15, 30)
-_PRE_MARKET_INIT = dt_time(8, 50)
 
 
 class TradingEngine:
@@ -42,10 +35,12 @@ class TradingEngine:
         broker: BaseBroker,
         registry: StrategyRegistry,
         risk: RiskManager,
+        market_config: MarketConfig | None = None,
     ) -> None:
         self._broker = broker
         self._registry = registry
         self._risk = risk
+        self._market = market_config or KR_MARKET
         self._orders = OrderManager(broker)
         self._running = False
         self._bus: EventBus | None = None
@@ -233,11 +228,11 @@ class TradingEngine:
                 logger.warning("engine.sync_loop_failed", error=str(e))
 
     async def _daily_init(self) -> None:
-        now = datetime.now(_KST)
+        now = datetime.now(self._market.timezone)
         today = now.strftime("%Y%m%d")
         if self._last_daily_init == today:
             return
-        if now.time() < _PRE_MARKET_INIT:
+        if not self._market.should_daily_init(now):
             return
 
         logger.info("engine.daily_init_start", date=today)
@@ -264,8 +259,7 @@ class TradingEngine:
             await self._bus.emit("engine.daily_init", {"date": today})
 
     def _is_market_hours(self) -> bool:
-        now_kst = datetime.now(_KST).time()
-        return _MARKET_OPEN <= now_kst <= _MARKET_END
+        return self._market.is_market_hours()
 
     async def on_tick(self, symbol: str, price: Decimal, volume: int) -> None:
         if not self._running:
@@ -408,8 +402,7 @@ class TradingEngine:
             if rejected_at and time.monotonic() - rejected_at < _REJECTED_COOLDOWN:
                 logger.debug("engine.signal_blocked", symbol=signal.symbol, reason="rejected_cooldown")
                 return
-            now_kst = datetime.now(_KST).time()
-            if _CUTOFF_BUY <= now_kst <= _MARKET_END:
+            if self._market.is_buy_cutoff():
                 logger.info("engine.buy_blocked_market_closing", symbol=signal.symbol)
                 return
             if self.positions.get(signal.symbol) is not None:
@@ -535,8 +528,7 @@ class TradingEngine:
                     )
 
     async def _check_market_close(self) -> None:
-        now_kst = datetime.now(_KST).time()
-        if now_kst < _CUTOFF_CLOSE or now_kst > _MARKET_END:
+        if not self._market.is_close_window():
             self._market_close_done = False
             return
         if self._market_close_done:

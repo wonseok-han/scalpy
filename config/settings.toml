@@ -1,4 +1,6 @@
 [default]
+# 시장 모드 ("kr": 국내주식, "us": 미국주식)
+market = "kr"
 # 모의투자 모드 (true: 모의투자, false: 실거래)
 # 실거래 전환은 이 파일에서만 가능 (CLI 인자 불가)
 mock = false
@@ -32,7 +34,7 @@ max_position_size = 100
 # 종목당 최대 투입 비율 (0.3 = 잔고의 30%, 가격 × 수량이 이 비율 초과 시 수량 축소)
 max_position_ratio = 0.4
 # 동시 보유 최대 포지션 수 (초과 시 신규 매수 차단)
-max_open_positions = 3
+max_open_positions = 2
 # 장 마감 시 자동 청산 (true: 스캘핑 기본, false: 퀀트 오버나이트 보유)
 market_close_liquidate = true
 # 손절 비율 (0.003 = 0.3%, 평균단가 대비 하락 시 자동 청산)
@@ -121,6 +123,8 @@ candle_minutes = 3
 # 최소 체결량 (이하 틱 무시)
 min_tick_volume = 5
 cooldown_seconds = 600
+# 장 초반 매수 유예 (실시간 캔들 N개 수집 전까지 BUY 차단, SELL은 허용)
+open_grace_candles = 5
 # 밴드 복귀 대기 시간 감안 넓은 손절/익절
 stop_loss_ratio = 0.01
 take_profit_ratio = 0.04
@@ -154,5 +158,27 @@ candle_minutes = 1
 # 최소 체결량 (이하 틱 무시)
 min_tick_volume = 5
 cooldown_seconds = 300
+# 장 초반 매수 유예 (실시간 캔들 N개 수집 전까지 BUY 차단, SELL은 허용)
+open_grace_candles = 10
 # 추세 추종 — 손절만 설정, 익절은 trailing에 위임
-stop_loss_ratio = 0.025
+stop_loss_ratio = 0.02
+
+[default.us_trading]
+# 미장 자동매매 설정 (market = "us" 일 때 사용)
+auto_start = false
+symbols = ["AAPL", "MSFT", "NVDA"]
+# 거래소 (NASD: 나스닥, NYSE: 뉴욕, AMEX: 아멕스)
+exchange = "NASD"
+max_position_size = 10
+max_position_ratio = 0.4
+max_open_positions = 3
+market_close_liquidate = true
+stop_loss_ratio = 0.02
+take_profit_ratio = 0.05
+trailing_activate_ratio = 0.02
+trailing_stop_ratio = 0.01
+profit_protect_activate = 0.01
+profit_protect_ratio = 0.005
+force_close_splits = 1
+min_hold_seconds = 60
+close_cooldown_seconds = 300

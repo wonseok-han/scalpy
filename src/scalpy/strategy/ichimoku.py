@@ -42,10 +42,12 @@ class IchimokuStrategy(BaseStrategy):
         self.stop_loss_ratio: float | None = 0.025
         self.take_profit_ratio: float | None = None
         self.min_tick_volume: int = 5
+        self.open_grace_candles: int = 10
         self._candles: dict[str, deque[_Candle]] = {}
         self._current_candle: dict[str, _Candle] = {}
         self._candle_start: dict[str, datetime] = {}
         self._live_candle_count: dict[str, int] = {}
+        self._realtime_candle_count: dict[str, int] = {}
 
     def reset(self) -> None:
         super().reset()
@@ -53,6 +55,7 @@ class IchimokuStrategy(BaseStrategy):
         self._current_candle.clear()
         self._candle_start.clear()
         self._live_candle_count.clear()
+        self._realtime_candle_count.clear()
 
     def _get_candles(self, symbol: str) -> deque[_Candle]:
         if symbol not in self._candles:
@@ -75,8 +78,12 @@ class IchimokuStrategy(BaseStrategy):
                 candles.append(self._current_candle[symbol])
                 count = self._live_candle_count.get(symbol, 0) + 1
                 self._live_candle_count[symbol] = count
+                rt = self._realtime_candle_count.get(symbol, 0) + 1
+                self._realtime_candle_count[symbol] = rt
                 if count <= self.senkou_b_period and count % 10 == 0:
                     logger.info("ichimoku.warmup", symbol=symbol, candles=count, need=self.senkou_b_period)
+                if rt == self.open_grace_candles:
+                    logger.info("ichimoku.grace_done", symbol=symbol, realtime_candles=rt)
             self._candle_start[symbol] = now
             self._current_candle[symbol] = _Candle(price)
         else:
@@ -137,7 +144,12 @@ class IchimokuStrategy(BaseStrategy):
         tk_bull = tenkan > kijun
         tk_bear = tenkan < kijun
 
-        if above_cloud and tk_bull and self._check_cooldown(symbol, "BUY"):
+        if above_cloud and tk_bull:
+            rt = self._realtime_candle_count.get(symbol, 0)
+            if rt < self.open_grace_candles:
+                return None
+            if not self._check_cooldown(symbol, "BUY"):
+                return None
             spread = float(price - cloud_top) / float(cloud_top) if cloud_top else 0
             confidence = min(0.85, 0.5 + spread * 20)
             return Signal(symbol, Side.BUY, self.name, price, 0, confidence, now)

@@ -1,0 +1,367 @@
+"""미국 주식 실시간 시세 WebSocket 스트림.
+
+KIS 해외주식 실시간 API를 사용하며, 기존 stream.py(국장)를 수정하지 않는 독립 구현체.
+TR ID: HDFSCNT0 (체결가), HDFSASP0 (호가), H0GSCNI0/H0GSCNI9 (체결통보)
+"""
+
+import asyncio
+import contextlib
+import json
+from collections.abc import Callable
+from decimal import Decimal
+from typing import Any
+
+import requests
+import structlog
+import websockets
+
+from scalpy.config import settings
+
+logger = structlog.get_logger()
+
+TickCallback = Callable[[str, Decimal, int], Any]
+OrderbookCallback = Callable[[str, list[tuple[Decimal, int]], list[tuple[Decimal, int]]], Any]
+FillCallback = Callable[[dict[str, Any]], Any]
+
+_WS_TR_KEY_PREFIX = {
+    "NASD": "DNAS",
+    "NYSE": "DNYS",
+    "AMEX": "DAMS",
+}
+
+
+def _get_ws_url(mock: bool) -> str:
+    key = "virtual" if mock else "real"
+    cfg = settings.get("kis_api.ws_urls", {})
+    url = cfg.get(key)
+    if not url:
+        raise RuntimeError(f"kis_api.ws_urls.{key} 설정 필요")
+    return url
+
+
+def _get_rest_url(mock: bool) -> str:
+    key = "virtual" if mock else "real"
+    cfg = settings.get("kis_api.rest_urls", {})
+    url = cfg.get(key)
+    if not url:
+        raise RuntimeError(f"kis_api.rest_urls.{key} 설정 필요")
+    return url
+
+
+def _get_approval_key(app_key: str, app_secret: str, *, mock: bool = True) -> str:
+    url = _get_rest_url(mock)
+    resp = requests.post(
+        f"{url}/oauth2/Approval",
+        headers={"content-type": "application/json"},
+        json={
+            "grant_type": "client_credentials",
+            "appkey": app_key,
+            "secretkey": app_secret,
+        },
+        timeout=10,
+    )
+    resp.raise_for_status()
+    return resp.json()["approval_key"]
+
+
+def _sub_msg(approval_key: str, tr_id: str, tr_key: str) -> str:
+    return json.dumps({
+        "header": {
+            "approval_key": approval_key,
+            "custtype": "P",
+            "tr_type": "1",
+            "content-type": "utf-8",
+        },
+        "body": {"input": {"tr_id": tr_id, "tr_key": tr_key}},
+    })
+
+
+def _unsub_msg(approval_key: str, tr_id: str, tr_key: str) -> str:
+    return json.dumps({
+        "header": {
+            "approval_key": approval_key,
+            "custtype": "P",
+            "tr_type": "2",
+            "content-type": "utf-8",
+        },
+        "body": {"input": {"tr_id": tr_id, "tr_key": tr_key}},
+    })
+
+
+class USMarketDataStream:
+    def __init__(
+        self,
+        app_key: str = "",
+        app_secret: str = "",
+        *,
+        mock: bool = True,
+        hts_id: str = "",
+        exchange: str = "NASD",
+    ) -> None:
+        self._app_key = app_key
+        self._app_secret = app_secret
+        self._mock = mock
+        self._hts_id = hts_id
+        self._exchange = exchange
+        self._tr_prefix = _WS_TR_KEY_PREFIX.get(exchange, "DNAS")
+        self._tick_callbacks: list[TickCallback] = []
+        self._orderbook_callbacks: list[OrderbookCallback] = []
+        self._fill_callbacks: list[FillCallback] = []
+        self._running = False
+        self._ws: Any = None
+        self._subscribed: set[str] = set()
+        self._approval_key: str = ""
+        self._recv_task: asyncio.Task[None] | None = None
+        self._stopping = False
+
+    def on_tick(self, callback: TickCallback) -> None:
+        self._tick_callbacks.append(callback)
+
+    def on_orderbook(self, callback: OrderbookCallback) -> None:
+        self._orderbook_callbacks.append(callback)
+
+    def on_fill(self, callback: FillCallback) -> None:
+        self._fill_callbacks.append(callback)
+
+    def on_vi(self, callback: Any) -> None:
+        pass
+
+    async def emit_tick(self, symbol: str, price: Decimal, volume: int) -> None:
+        for cb in self._tick_callbacks:
+            result = cb(symbol, price, volume)
+            if asyncio.iscoroutine(result):
+                await result
+
+    async def emit_orderbook(
+        self,
+        symbol: str,
+        asks: list[tuple[Decimal, int]],
+        bids: list[tuple[Decimal, int]],
+    ) -> None:
+        for cb in self._orderbook_callbacks:
+            result = cb(symbol, asks, bids)
+            if asyncio.iscoroutine(result):
+                await result
+
+    async def _emit_fill(self, data: dict[str, Any]) -> None:
+        for cb in self._fill_callbacks:
+            result = cb(data)
+            if asyncio.iscoroutine(result):
+                await result
+
+    def _tr_key(self, symbol: str) -> str:
+        return f"{self._tr_prefix}{symbol}"
+
+    async def start(self, symbols: list[str]) -> None:
+        await self._cleanup_recv_task()
+        if self._ws:
+            try:
+                await asyncio.wait_for(self._ws.close(), timeout=2)
+            except (asyncio.TimeoutError, Exception):
+                pass
+            self._ws = None
+        self._subscribed.clear()
+
+        if not self._app_key:
+            logger.warning("us_stream.no_api_key")
+            return
+
+        self._approval_key = _get_approval_key(self._app_key, self._app_secret, mock=self._mock)
+        ws_url = _get_ws_url(self._mock)
+
+        self._ws = await websockets.connect(ws_url, ping_interval=None)
+        self._running = True
+
+        if self._hts_id:
+            cni_tr = "H0GSCNI9" if self._mock else "H0GSCNI0"
+            await self._ws.send(_sub_msg(self._approval_key, cni_tr, self._hts_id))
+            await asyncio.sleep(0.1)
+
+        for sym in symbols:
+            tr_key = self._tr_key(sym)
+            await self._ws.send(_sub_msg(self._approval_key, "HDFSCNT0", tr_key))
+            await asyncio.sleep(0.1)
+            await self._ws.send(_sub_msg(self._approval_key, "HDFSASP0", tr_key))
+            await asyncio.sleep(0.1)
+
+        self._subscribed = set(symbols)
+        logger.info("us_stream.started", symbols=symbols, exchange=self._exchange)
+        self._recv_task = asyncio.create_task(self._recv_loop())
+
+    async def _recv_loop(self) -> None:
+        reconnect_delay = 5
+        while self._running:
+            try:
+                async for raw in self._ws:
+                    if not self._running:
+                        return
+                    if raw[0] in ("0", "1"):
+                        reconnect_delay = 5
+                    await self._handle_message(raw)
+            except websockets.ConnectionClosed:
+                logger.warning("us_stream.disconnected")
+            except Exception as e:
+                logger.error("us_stream.error", error=str(e))
+
+            if not self._running:
+                return
+
+            delay = min(reconnect_delay, 60)
+            logger.info("us_stream.reconnecting", delay=delay)
+            await asyncio.sleep(delay)
+            reconnect_delay = min(reconnect_delay * 2, 60)
+
+            try:
+                if self._ws:
+                    try:
+                        await asyncio.wait_for(self._ws.close(), timeout=2)
+                    except Exception:
+                        pass
+                    self._ws = None
+                    await asyncio.sleep(3)
+
+                self._approval_key = await asyncio.to_thread(
+                    _get_approval_key, self._app_key, self._app_secret, mock=self._mock,
+                )
+                await asyncio.sleep(1)
+                ws_url = _get_ws_url(self._mock)
+                self._ws = await websockets.connect(ws_url, ping_interval=None)
+
+                if self._hts_id:
+                    cni_tr = "H0GSCNI9" if self._mock else "H0GSCNI0"
+                    await self._ws.send(_sub_msg(self._approval_key, cni_tr, self._hts_id))
+                    await asyncio.sleep(0.2)
+
+                for sym in self._subscribed:
+                    tr_key = self._tr_key(sym)
+                    await self._ws.send(_sub_msg(self._approval_key, "HDFSCNT0", tr_key))
+                    await asyncio.sleep(0.2)
+                    await self._ws.send(_sub_msg(self._approval_key, "HDFSASP0", tr_key))
+                    await asyncio.sleep(0.2)
+
+                logger.info("us_stream.reconnected", symbols=len(self._subscribed))
+            except Exception as e:
+                logger.error("us_stream.reconnect_failed", error=str(e))
+
+    async def _handle_message(self, raw: str) -> None:
+        if not self._running:
+            return
+        if raw[0] in ("0", "1"):
+            parts = raw.split("|")
+            tr_id = parts[1]
+            data = parts[3]
+
+            if tr_id == "HDFSCNT0":
+                await self._on_execution(data)
+            elif tr_id == "HDFSASP0":
+                await self._on_orderbook_data(data)
+            elif tr_id in ("H0GSCNI0", "H0GSCNI9"):
+                await self._on_fill_notice(data)
+        else:
+            msg = json.loads(raw)
+            tr_id = msg.get("header", {}).get("tr_id", "")
+            if tr_id == "PINGPONG":
+                await self._ws.send(raw)
+            else:
+                rt_cd = msg.get("body", {}).get("rt_cd", "")
+                msg1 = msg.get("body", {}).get("msg1", "")
+                if rt_cd == "0":
+                    logger.info("us_stream.subscribed", tr_id=tr_id, msg=msg1)
+                else:
+                    logger.warning("us_stream.sub_error", tr_id=tr_id, msg=msg1)
+
+    async def _on_execution(self, data: str) -> None:
+        """HDFSCNT0 필드: SYMB^ZDIV^TYMD^XYMD^XHMS^KYMD^KHMS^OPEN^HIGH^LOW^LAST^SIGN^DIFF^RATE^PBID^PASK^VBID^VASK^EVOL^TVOL^..."""
+        fields = data.split("^")
+        symbol = fields[0]
+        price = Decimal(fields[10])
+        volume = int(fields[18]) if len(fields) > 18 else 0
+        await self.emit_tick(symbol, price, volume)
+
+    async def _on_orderbook_data(self, data: str) -> None:
+        fields = data.split("^")
+        symbol = fields[0]
+        asks: list[tuple[Decimal, int]] = []
+        bids: list[tuple[Decimal, int]] = []
+        if len(fields) > 15:
+            ask_price = Decimal(fields[15]) if fields[15] else Decimal("0")
+            ask_vol = int(fields[17]) if len(fields) > 17 and fields[17] else 0
+            bid_price = Decimal(fields[14]) if fields[14] else Decimal("0")
+            bid_vol = int(fields[16]) if len(fields) > 16 and fields[16] else 0
+            if ask_price > 0:
+                asks.append((ask_price, ask_vol))
+            if bid_price > 0:
+                bids.append((bid_price, bid_vol))
+        await self.emit_orderbook(symbol, asks, bids)
+
+    async def _on_fill_notice(self, data: str) -> None:
+        fields = data.split("^")
+        if len(fields) < 14:
+            return
+        symbol = fields[8] if len(fields) > 8 else ""
+        side_cd = fields[4] if len(fields) > 4 else ""
+        fill_data: dict[str, Any] = {
+            "symbol": symbol,
+            "order_no": fields[2] if len(fields) > 2 else "",
+            "side": "sell" if side_cd == "01" else "buy",
+            "quantity": int(fields[9] or "0") if len(fields) > 9 else 0,
+            "price": float(fields[10] or "0") if len(fields) > 10 else 0,
+            "is_fill": fields[13] == "2" if len(fields) > 13 else False,
+            "is_rejected": fields[12] == "1" if len(fields) > 12 else False,
+        }
+        await self._emit_fill(fill_data)
+
+    async def update_subscriptions(self, new_symbols: list[str]) -> None:
+        new_set = set(new_symbols)
+        to_remove = self._subscribed - new_set
+        to_add = new_set - self._subscribed
+
+        if not to_remove and not to_add:
+            return
+
+        if self._ws and self._approval_key:
+            for sym in to_remove:
+                tr_key = self._tr_key(sym)
+                try:
+                    await self._ws.send(_unsub_msg(self._approval_key, "HDFSCNT0", tr_key))
+                    await self._ws.send(_unsub_msg(self._approval_key, "HDFSASP0", tr_key))
+                except Exception as e:
+                    logger.warning("us_stream.unsub_failed", symbol=sym, error=str(e))
+                await asyncio.sleep(0.05)
+
+            for sym in to_add:
+                tr_key = self._tr_key(sym)
+                try:
+                    await self._ws.send(_sub_msg(self._approval_key, "HDFSCNT0", tr_key))
+                    await self._ws.send(_sub_msg(self._approval_key, "HDFSASP0", tr_key))
+                except Exception as e:
+                    logger.warning("us_stream.sub_failed", symbol=sym, error=str(e))
+                await asyncio.sleep(0.05)
+
+        self._subscribed = new_set
+        logger.info("us_stream.subscriptions_updated",
+                     removed=list(to_remove), added=list(to_add), total=len(new_set))
+
+    async def _cleanup_recv_task(self) -> None:
+        if self._recv_task and not self._recv_task.done():
+            self._recv_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._recv_task
+        self._recv_task = None
+
+    async def stop(self) -> None:
+        self._stopping = True
+        self._running = False
+        await self._cleanup_recv_task()
+        if self._ws:
+            try:
+                await asyncio.wait_for(self._ws.close(), timeout=3)
+            except (asyncio.TimeoutError, Exception):
+                pass
+            self._ws = None
+        self._stopping = False
+        logger.info("us_stream.stopped")
+
+    @property
+    def is_running(self) -> bool:
+        return self._running

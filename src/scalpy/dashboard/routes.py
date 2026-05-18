@@ -478,8 +478,8 @@ def _apply_strategies() -> None:
 _last_quant_scan: list[dict] = []
 
 
-async def _build_universe(quant_cfg: dict, max_price: int = 0) -> tuple[list[str], dict[str, str]]:
-    """전체 시장에서 1차 필터링된 universe와 종목명 맵 반환."""
+async def _build_universe(quant_cfg: dict, max_price: int = 0) -> tuple[list[str], dict[str, str], dict[str, dict]]:
+    """전체 시장에서 1차 필터링된 universe, 종목명 맵, 장중 실시간 데이터 반환."""
     from scalpy.screening.quant_screener import scan_market_universe
 
     min_cr = quant_cfg.get("min_change_rate", -2.0)
@@ -492,14 +492,18 @@ async def _build_universe(quant_cfg: dict, max_price: int = 0) -> tuple[list[str
         )
         symbols = [s["symbol"] for s in stocks]
         names = {s["symbol"]: s["name"] for s in stocks}
+        live_data = {
+            s["symbol"]: {"change_rate": s["change_rate"], "volume": s["volume"], "amount": s["amount"]}
+            for s in stocks
+        }
         logger.info("quant.market_universe", candidates=len(symbols))
         from scalpy.screening.quant_screener import get_market_condition
         if _state:
             _state.market_condition = get_market_condition()
-        return symbols, names
+        return symbols, names, live_data
     except Exception as e:
         logger.warning("quant.market_universe_failed", error=str(e))
-        return [], {}
+        return [], {}, {}
 
 
 async def _quant_start() -> list[str]:
@@ -524,8 +528,9 @@ async def _quant_start() -> list[str]:
 
     universe = list(quant_cfg.get("universe", []))
     names: dict[str, str] = {}
+    live_data: dict[str, dict] = {}
     if not universe:
-        universe, names = await _build_universe(quant_cfg, max_price=max_price)
+        universe, names, live_data = await _build_universe(quant_cfg, max_price=max_price)
     if not universe:
         broker = _engine_ref._broker if _engine_ref else None
         if broker:
@@ -555,7 +560,7 @@ async def _quant_start() -> list[str]:
         ichimoku_filter=ichi_on,
     )
     held = [p.symbol for p in _engine_ref.positions.all()] if _engine_ref else []
-    selected = screener.scan(universe, held_symbols=held)
+    selected = screener.scan(universe, held_symbols=held, live_data=live_data or None)
 
     all_names = {**names, **(_state.symbol_names if _state else {})}
     results = screener.get_last_scan()
@@ -604,8 +609,9 @@ async def _quant_rescan_loop(
 
             universe = list(quant_cfg.get("universe", []))
             names: dict[str, str] = {}
+            live_data: dict[str, dict] = {}
             if not universe:
-                universe, names = await _build_universe(quant_cfg, max_price=max_price)
+                universe, names, live_data = await _build_universe(quant_cfg, max_price=max_price)
             if not universe and _engine_ref:
                 universe = list(_engine_ref._active_symbols)
             if not universe:
@@ -626,7 +632,7 @@ async def _quant_rescan_loop(
                 ichimoku_filter=ichi_on,
             )
             held = [p.symbol for p in _engine_ref.positions.all()] if _engine_ref else []
-            new_symbols = screener.scan(universe, held_symbols=held)
+            new_symbols = screener.scan(universe, held_symbols=held, live_data=live_data or None)
 
             all_names = {**names, **(_state.symbol_names if _state else {})}
             results = screener.get_last_scan()
