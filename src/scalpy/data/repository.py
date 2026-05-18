@@ -41,12 +41,16 @@ class TradeRepository:
             with self._engine.begin() as conn:
                 conn.execute(text("ALTER TABLE trades ADD COLUMN reason VARCHAR(30) DEFAULT ''"))
             logger.info("migration.added_reason_column")
+        if "market" not in columns:
+            with self._engine.begin() as conn:
+                conn.execute(text("ALTER TABLE trades ADD COLUMN market VARCHAR(4) DEFAULT 'kr'"))
+            logger.info("migration.added_market_column")
 
     def recreate_trades_table(self) -> None:
         TradeRow.__table__.drop(self._engine, checkfirst=True)
         TradeRow.__table__.create(self._engine, checkfirst=True)
 
-    def sync_trades(self, trades: list[dict], reason_map: dict[str, str] | None = None) -> int:
+    def sync_trades(self, trades: list[dict], reason_map: dict[str, str] | None = None, market: str = "kr") -> int:
         """ccld API 데이터를 DB에 upsert. (order_no, order_date) 기준."""
         if not trades:
             return 0
@@ -122,6 +126,7 @@ class TradeRepository:
                         reason=reason,
                         fee=fee,
                         mock=self._mock,
+                        market=market,
                     )
                     session.add(row)
                     existing[key] = t.get("tot_ccld_qty", 0)
@@ -334,70 +339,78 @@ class TradeRepository:
             logger.info("recalc_all_pnl.done", symbols=len(symbols), updated=updated)
             return updated
 
-    def get_daily_pnl(self, day: date | None = None) -> int:
+    def get_daily_pnl(self, day: date | None = None, market: str | None = None) -> int:
         day_str = (day or date.today()).strftime("%Y%m%d")
         with Session(self._engine) as session:
-            result = session.scalar(
-                select(func.coalesce(func.sum(TradeRow.pnl), 0)).where(
-                    TradeRow.side == "sell",
-                    TradeRow.order_date == day_str,
-                    TradeRow.mock == self._mock,
-                )
+            q = select(func.coalesce(func.sum(TradeRow.pnl), 0)).where(
+                TradeRow.side == "sell",
+                TradeRow.order_date == day_str,
+                TradeRow.mock == self._mock,
             )
-            return int(result or 0)
+            if market:
+                q = q.where(TradeRow.market == market)
+            return int(session.scalar(q) or 0)
 
-    def get_daily_trade_count(self, day: date | None = None) -> int:
+    def get_daily_trade_count(self, day: date | None = None, market: str | None = None) -> int:
         day_str = (day or date.today()).strftime("%Y%m%d")
         with Session(self._engine) as session:
-            return session.scalar(
-                select(func.count(TradeRow.id)).where(
-                    TradeRow.order_date == day_str,
-                    TradeRow.mock == self._mock,
-                )
-            ) or 0
-
-    def get_daily_fees(self, day: date | None = None) -> int:
-        day_str = (day or date.today()).strftime("%Y%m%d")
-        with Session(self._engine) as session:
-            result = session.scalar(
-                select(func.coalesce(func.sum(TradeRow.fee), 0)).where(
-                    TradeRow.order_date == day_str,
-                    TradeRow.mock == self._mock,
-                )
+            q = select(func.count(TradeRow.id)).where(
+                TradeRow.order_date == day_str,
+                TradeRow.mock == self._mock,
             )
-            return int(result or 0)
+            if market:
+                q = q.where(TradeRow.market == market)
+            return session.scalar(q) or 0
+
+    def get_daily_fees(self, day: date | None = None, market: str | None = None) -> int:
+        day_str = (day or date.today()).strftime("%Y%m%d")
+        with Session(self._engine) as session:
+            q = select(func.coalesce(func.sum(TradeRow.fee), 0)).where(
+                TradeRow.order_date == day_str,
+                TradeRow.mock == self._mock,
+            )
+            if market:
+                q = q.where(TradeRow.market == market)
+            return int(session.scalar(q) or 0)
 
 
-    def get_strategy_performance(self, day: date | None = None) -> dict[str, dict]:
+    def get_strategy_performance(self, day: date | None = None, market: str | None = None) -> dict[str, dict]:
         """trades 테이블에서 전략별 라운드트립(매수→매도) 기반 성과 집계."""
         day = day or date.today()
         day_str = day.strftime("%Y%m%d")
         with Session(self._engine) as session:
-            symbols = [r[0] for r in session.execute(
-                select(TradeRow.symbol).where(
-                    TradeRow.side == "sell",
-                    TradeRow.order_date == day_str,
-                    TradeRow.mock == self._mock,
-                    TradeRow.strategy != "",
-                ).group_by(TradeRow.symbol)
-            ).all()]
+            q = select(TradeRow.symbol).where(
+                TradeRow.side == "sell",
+                TradeRow.order_date == day_str,
+                TradeRow.mock == self._mock,
+                TradeRow.strategy != "",
+            )
+            if market:
+                q = q.where(TradeRow.market == market)
+            symbols = [r[0] for r in session.execute(q.group_by(TradeRow.symbol)).all()]
 
             stats: dict[str, dict] = {}
             for symbol in symbols:
+                bq = select(TradeRow).where(
+                    TradeRow.symbol == symbol,
+                    TradeRow.side == "buy",
+                    TradeRow.mock == self._mock,
+                )
+                if market:
+                    bq = bq.where(TradeRow.market == market)
                 buys = session.scalars(
-                    select(TradeRow).where(
-                        TradeRow.symbol == symbol,
-                        TradeRow.side == "buy",
-                        TradeRow.mock == self._mock,
-                    ).order_by(TradeRow.order_date, TradeRow.ord_time)
+                    bq.order_by(TradeRow.order_date, TradeRow.ord_time)
                 ).all()
+                sq = select(TradeRow).where(
+                    TradeRow.symbol == symbol,
+                    TradeRow.side == "sell",
+                    TradeRow.order_date == day_str,
+                    TradeRow.mock == self._mock,
+                )
+                if market:
+                    sq = sq.where(TradeRow.market == market)
                 sells = session.scalars(
-                    select(TradeRow).where(
-                        TradeRow.symbol == symbol,
-                        TradeRow.side == "sell",
-                        TradeRow.order_date == day_str,
-                        TradeRow.mock == self._mock,
-                    ).order_by(TradeRow.order_date, TradeRow.ord_time)
+                    sq.order_by(TradeRow.order_date, TradeRow.ord_time)
                 ).all()
 
                 buy_queue: list[tuple[int, float, str, str, int]] = []
@@ -476,14 +489,17 @@ class TradeRepository:
                 del s["_peak"]
             return stats
 
-    def get_daily_performance_history(self) -> list[dict]:
+    def get_daily_performance_history(self, market: str | None = None) -> list[dict]:
         """일자별 전략 성과 히스토리."""
         with Session(self._engine) as session:
+            q = select(TradeRow.order_date).where(
+                TradeRow.side == "sell",
+                TradeRow.mock == self._mock,
+            )
+            if market:
+                q = q.where(TradeRow.market == market)
             dates = [r[0] for r in session.execute(
-                select(TradeRow.order_date).where(
-                    TradeRow.side == "sell",
-                    TradeRow.mock == self._mock,
-                ).group_by(TradeRow.order_date)
+                q.group_by(TradeRow.order_date)
                 .order_by(TradeRow.order_date.desc())
             ).all()]
 
@@ -492,7 +508,7 @@ class TradeRepository:
         for day_str in reversed(dates):
             from datetime import datetime as dt
             day = dt.strptime(day_str, "%Y%m%d").date()
-            perf = self.get_strategy_performance(day=day)
+            perf = self.get_strategy_performance(day=day, market=market)
             day_trades = 0
             day_wins = 0
             day_losses = 0
@@ -588,14 +604,15 @@ class TradeRepository:
                     result[symbol] = row
             return result
 
-    def get_trades_today(self, day: date | None = None) -> list[dict]:
+    def get_trades_today(self, day: date | None = None, market: str | None = None) -> list[dict]:
         day_str = (day or date.today()).strftime("%Y%m%d")
         with Session(self._engine) as session:
-            rows = session.scalars(
-                select(TradeRow)
-                .where(TradeRow.order_date == day_str, TradeRow.mock == self._mock)
-                .order_by(TradeRow.ord_time.desc())
-            ).all()
+            q = select(TradeRow).where(
+                TradeRow.order_date == day_str, TradeRow.mock == self._mock,
+            )
+            if market:
+                q = q.where(TradeRow.market == market)
+            rows = session.scalars(q.order_by(TradeRow.ord_time.desc())).all()
 
             result = []
             for r in rows:

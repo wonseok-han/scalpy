@@ -44,6 +44,7 @@ _quant_rescan_task: asyncio.Task[None] | None = None
 _perf_cache: dict[str, dict] = {}
 _perf_sync_task: asyncio.Task[None] | None = None
 _PERF_SYNC_INTERVAL = 120
+_bus_subscriptions: list[tuple[str, Any]] = []
 
 _SSE_EVENTS = [
     "tick.received", "order.filled", "signal.generated",
@@ -63,6 +64,17 @@ def init_routes(
     trade_repo: Any = None,
 ) -> None:
     global _state, _sse, _bus, _engine_ref, _stream_ref, _registry_ref, _trade_repo_ref
+    global _bus_subscriptions, _perf_sync_task, _trading_started, _perf_cache
+
+    old_bus = _bus
+    if old_bus:
+        for event, handler in _bus_subscriptions:
+            try:
+                old_bus.unsubscribe(event, handler)
+            except ValueError:
+                pass
+    _bus_subscriptions = []
+
     _state = state
     _sse = sse
     _bus = bus
@@ -70,20 +82,24 @@ def init_routes(
     _stream_ref = stream
     _registry_ref = registry
     _trade_repo_ref = trade_repo
+    _trading_started = False
+    _perf_cache = {}
 
     if engine and trade_repo:
         engine.set_trade_repo(trade_repo)
         engine._performance.set_repo(trade_repo)
 
-    global _perf_sync_task
-    if trade_repo and _perf_sync_task is None:
+    if trade_repo and engine and _perf_sync_task is None:
         _perf_sync_task = asyncio.create_task(_perf_sync_loop())
 
     if bus:
         for event in _SSE_EVENTS:
             bus.subscribe(event, _on_state_change)
+            _bus_subscriptions.append((event, _on_state_change))
         bus.subscribe("order.filled", _on_order_filled)
+        _bus_subscriptions.append(("order.filled", _on_order_filled))
         bus.subscribe("engine.daily_init", _on_daily_init)
+        _bus_subscriptions.append(("engine.daily_init", _on_daily_init))
 
     logger.info("routes.initialized", engine=engine is not None, stream=stream is not None)
 
@@ -114,14 +130,14 @@ async def _sync_trades_now() -> None:
         trades = await broker.get_trade_history()
         if trades:
             reasons = getattr(_engine_ref, "_trade_reasons", {})
-            _trade_repo_ref.sync_trades(trades, reason_map=reasons)
+            _trade_repo_ref.sync_trades(trades, reason_map=reasons, market="kr")
         if not settings.get("mock", True):
             profit_records = await broker.get_period_pnl()
             if profit_records and _trade_repo_ref:
                 _trade_repo_ref.correct_pnl_from_api(profit_records)
         await _refresh_pnl_cache()
         if _trade_repo_ref:
-            _perf_cache = _trade_repo_ref.get_strategy_performance()
+            _perf_cache = _trade_repo_ref.get_strategy_performance(market="kr")
         if _sse:
             _sse.broadcast("state", _build_sse_state())
             if _perf_cache:
@@ -166,7 +182,7 @@ async def _perf_sync_loop() -> None:
         await asyncio.sleep(_PERF_SYNC_INTERVAL)
         try:
             if _trade_repo_ref:
-                _perf_cache = _trade_repo_ref.get_strategy_performance()
+                _perf_cache = _trade_repo_ref.get_strategy_performance(market="kr")
                 if _sse:
                     _sse.broadcast("performance", _perf_cache)
         except Exception as e:
@@ -195,22 +211,34 @@ async def _refresh_pnl_cache() -> None:
 
 def _build_sse_state() -> dict[str, Any]:
     """SSE 푸시용 — API 호출 없이 메모리 캐시만 사용."""
+    if _engine_ref is None:
+        return {
+            "status": {
+                "running": False, "balance": "-", "prev_balance": "",
+                "invested": "0", "available_balance": "-", "pending_order_count": 0,
+                "daily_pnl": "0", "total_fees": "0", "trade_count": 0,
+                "last_tick_at": "", "position_count": 0, "screening_count": 0,
+            },
+            "positions": [],
+            "screening": {"symbols": [], "names": {}},
+            "market_condition": {},
+        }
+
     names = _state.symbol_names if _state else {}
 
     positions: list[dict[str, Any]] = []
-    if _engine_ref is not None:
-        for p in _engine_ref.positions.all():
-            pnl_pct = getattr(p, '_pnl_pct', 0.0)
-            positions.append({
-                "symbol": p.symbol,
-                "name": names.get(p.symbol, p.symbol),
-                "quantity": p.quantity,
-                "avg_price": str(p.avg_price),
-                "current_price": str(p.current_price),
-                "pnl": str(p.unrealized_pnl),
-                "pnl_pct": round(pnl_pct, 2),
-                "strategy": p.strategy,
-            })
+    for p in _engine_ref.positions.all():
+        pnl_pct = getattr(p, '_pnl_pct', 0.0)
+        positions.append({
+            "symbol": p.symbol,
+            "name": names.get(p.symbol, p.symbol),
+            "quantity": p.quantity,
+            "avg_price": str(p.avg_price),
+            "current_price": str(p.current_price),
+            "pnl": str(p.unrealized_pnl),
+            "pnl_pct": round(pnl_pct, 2),
+            "strategy": p.strategy,
+        })
 
     daily_pnl = "0"
     total_fees = "0"
@@ -221,30 +249,29 @@ def _build_sse_state() -> dict[str, Any]:
     if _trade_repo_ref:
         try:
             if not daily_pnl or daily_pnl == "0":
-                daily_pnl = str(_trade_repo_ref.get_daily_pnl())
+                daily_pnl = str(_trade_repo_ref.get_daily_pnl(market="kr"))
             if not total_fees or total_fees == "0":
-                total_fees = str(_trade_repo_ref.get_daily_fees())
-            trade_count = _trade_repo_ref.get_daily_trade_count()
+                total_fees = str(_trade_repo_ref.get_daily_fees(market="kr"))
+            trade_count = _trade_repo_ref.get_daily_trade_count(market="kr")
         except Exception:
             pass
 
     invested = 0
     available_balance = "-"
     pending_order_count = 0
-    if _engine_ref is not None:
-        for p in _engine_ref.positions.all():
-            invested += int(p.avg_price * p.quantity)
-        try:
-            cash = _engine_ref._cached_available_cash
-            if cash is not None:
-                available_balance = str(int(cash - _engine_ref._pending_buy_cost))
-        except Exception:
-            pass
-        pending_order_count = len(_engine_ref.orders.get_pending())
+    for p in _engine_ref.positions.all():
+        invested += int(p.avg_price * p.quantity)
+    try:
+        cash = _engine_ref._cached_available_cash
+        if cash is not None:
+            available_balance = str(int(cash - _engine_ref._pending_buy_cost))
+    except Exception:
+        pass
+    pending_order_count = len(_engine_ref.orders.get_pending())
 
     return {
         "status": {
-            "running": _engine_ref._running if _engine_ref else False,
+            "running": _engine_ref._running,
             "balance": _state.last_api_balance if _state else "-",
             "prev_balance": _state.last_prev_balance if _state else "",
             "invested": str(invested),
@@ -281,9 +308,18 @@ async def health() -> dict[str, Any]:
 async def get_status() -> dict[str, Any]:
     """엔진 상태 — 캐시 데이터만, 즉시 반환."""
     mock = settings.get("mock", True)
+    if _engine_ref is None:
+        return {
+            "running": False, "balance": "-", "prev_balance": "",
+            "daily_pnl": "0", "total_fees": "0", "trade_count": 0,
+            "last_tick_at": "", "position_count": 0, "screening_count": 0,
+            "mock": mock, "strategies": {}, "strategy_enabled": {},
+            "trading_started": False, "market_condition": {},
+        }
+
     strategy_names = {s.name: s.display_name for s in _registry_ref.all()} if _registry_ref else {}
     strategy_enabled = {s.name: s.enabled for s in _registry_ref.all()} if _registry_ref else {}
-    pos_count = len(_engine_ref.positions.all()) if _engine_ref else 0
+    pos_count = len(_engine_ref.positions.all())
     daily_pnl = "0"
     total_fees = "0"
     trade_count = 0
@@ -293,15 +329,15 @@ async def get_status() -> dict[str, Any]:
     if _trade_repo_ref:
         try:
             if not daily_pnl or daily_pnl == "0":
-                daily_pnl = str(_trade_repo_ref.get_daily_pnl())
+                daily_pnl = str(_trade_repo_ref.get_daily_pnl(market="kr"))
             if not total_fees or total_fees == "0":
-                total_fees = str(_trade_repo_ref.get_daily_fees())
-            trade_count = _trade_repo_ref.get_daily_trade_count()
+                total_fees = str(_trade_repo_ref.get_daily_fees(market="kr"))
+            trade_count = _trade_repo_ref.get_daily_trade_count(market="kr")
         except Exception:
             pass
 
     return {
-        "running": _engine_ref._running if _engine_ref else False,
+        "running": _engine_ref._running,
         "balance": _state.last_api_balance if _state else "-",
         "prev_balance": _state.last_prev_balance if _state else "",
         "daily_pnl": daily_pnl,
@@ -364,7 +400,7 @@ async def get_trades() -> list[dict[str, Any]]:
     if not _trade_repo_ref:
         return []
     try:
-        trades = _trade_repo_ref.get_trades_today()
+        trades = _trade_repo_ref.get_trades_today(market="kr")
         if trades and _state:
             for t in trades:
                 name = t.get("name", "")
@@ -463,7 +499,7 @@ async def cancel_all_orders() -> dict[str, Any]:
         return {"success": False, "error": str(e)}
 
 
-_QUANT_STRATEGIES = {"momentum", "mean_reversion", "factor", "ichimoku"}
+_QUANT_STRATEGIES = {"momentum", "mean_reversion", "factor", "ichimoku", "volume_spike"}
 
 
 def _apply_strategies() -> None:
@@ -852,7 +888,7 @@ async def quant_scan(refresh: bool = False) -> dict[str, Any]:
     universe = list(quant_cfg.get("universe", []))
     names: dict[str, str] = {}
     if not universe:
-        universe, names = await _build_universe(quant_cfg, max_price=scan_max_price)
+        universe, names, _live = await _build_universe(quant_cfg, max_price=scan_max_price)
     if not universe and _engine_ref:
         universe = list(_engine_ref._active_symbols)
     if not universe:
@@ -893,7 +929,7 @@ async def performance() -> dict[str, Any]:
         return {"data": _perf_cache}
     if _trade_repo_ref:
         try:
-            _perf_cache = _trade_repo_ref.get_strategy_performance()
+            _perf_cache = _trade_repo_ref.get_strategy_performance(market="kr")
             return {"data": _perf_cache}
         except Exception:
             pass
@@ -905,7 +941,7 @@ async def performance_history() -> dict[str, Any]:
     if not _trade_repo_ref:
         return {"data": []}
     try:
-        return {"data": _trade_repo_ref.get_daily_performance_history()}
+        return {"data": _trade_repo_ref.get_daily_performance_history(market="kr")}
     except Exception:
         return {"data": []}
 

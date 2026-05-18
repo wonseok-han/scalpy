@@ -110,12 +110,13 @@ async def _trade_sync_loop(
     engine: "TradingEngine | None" = None,
 ) -> None:
     mock = settings.get("mock", True)
+    market = settings.get("market", "kr")
     while not stop_event.is_set():
         try:
             trades = await broker.get_trade_history()
             if trades:
                 reasons = getattr(engine, "_trade_reasons", {}) if engine else {}
-                count = trade_repo.sync_trades(trades, reason_map=reasons)
+                count = trade_repo.sync_trades(trades, reason_map=reasons, market=market)
                 if count:
                     logger.info("trade_sync.new_trades", count=count)
             if not mock:
@@ -132,7 +133,7 @@ async def _trade_sync_loop(
             pass
 
 
-_QUANT_STRATEGIES = {"momentum", "mean_reversion", "factor", "ichimoku"}
+_QUANT_STRATEGIES = {"momentum", "mean_reversion", "factor", "ichimoku", "volume_spike"}
 
 
 def _apply_strategies(registry: StrategyRegistry) -> None:

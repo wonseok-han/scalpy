@@ -28,6 +28,7 @@ _trading_started: bool = False
 _initial_start_done: bool = False
 _quant_rescan_task: asyncio.Task[None] | None = None
 _last_quant_scan: list[dict] = []
+_bus_subscriptions: list[tuple[str, Any]] = []
 
 _SSE_EVENTS = [
     "tick.received", "order.filled", "signal.generated",
@@ -36,7 +37,7 @@ _SSE_EVENTS = [
     "engine.daily_init",
 ]
 
-_QUANT_STRATEGIES = {"momentum", "mean_reversion", "factor", "ichimoku"}
+_QUANT_STRATEGIES = {"momentum", "mean_reversion", "factor", "ichimoku", "volume_spike"}
 
 
 def init_us_routes(
@@ -49,6 +50,17 @@ def init_us_routes(
     trade_repo: Any = None,
 ) -> None:
     global _state, _sse, _bus, _engine_ref, _stream_ref, _registry_ref, _trade_repo_ref
+    global _bus_subscriptions, _trading_started, _perf_cache
+
+    old_bus = _bus
+    if old_bus:
+        for event, handler in _bus_subscriptions:
+            try:
+                old_bus.unsubscribe(event, handler)
+            except ValueError:
+                pass
+    _bus_subscriptions = []
+
     _state = state
     _sse = sse
     _bus = bus
@@ -56,6 +68,8 @@ def init_us_routes(
     _stream_ref = stream
     _registry_ref = registry
     _trade_repo_ref = trade_repo
+    _trading_started = False
+    _perf_cache = None
 
     if engine and trade_repo:
         engine.set_trade_repo(trade_repo)
@@ -64,6 +78,7 @@ def init_us_routes(
     if bus:
         for event in _SSE_EVENTS:
             bus.subscribe(event, _on_state_change)
+            _bus_subscriptions.append((event, _on_state_change))
 
     logger.info("us_routes.initialized")
 
@@ -75,50 +90,69 @@ def _on_state_change(data: dict[str, Any]) -> None:
 
 
 def _build_sse_state() -> dict[str, Any]:
+    if _engine_ref is None:
+        return {
+            "status": {
+                "running": False, "balance": "-", "prev_balance": "",
+                "invested": "0", "available_balance": "-", "pending_order_count": 0,
+                "daily_pnl": "0", "total_fees": "0", "trade_count": 0,
+                "last_tick_at": "", "position_count": 0, "screening_count": 0,
+                "currency": "USD",
+            },
+            "positions": [],
+            "screening": {"symbols": [], "names": {}},
+            "market_condition": {},
+        }
+
     names = _state.symbol_names if _state else {}
     positions: list[dict[str, Any]] = []
-    if _engine_ref is not None:
-        for p in _engine_ref.positions.all():
-            pnl_pct = getattr(p, '_pnl_pct', 0.0)
-            positions.append({
-                "symbol": p.symbol,
-                "name": names.get(p.symbol, p.symbol),
-                "quantity": p.quantity,
-                "avg_price": str(p.avg_price),
-                "current_price": str(p.current_price),
-                "pnl": str(p.unrealized_pnl),
-                "pnl_pct": round(pnl_pct, 2),
-                "strategy": p.strategy,
-            })
+    for p in _engine_ref.positions.all():
+        pnl_pct = getattr(p, '_pnl_pct', 0.0)
+        positions.append({
+            "symbol": p.symbol,
+            "name": names.get(p.symbol, p.symbol),
+            "quantity": p.quantity,
+            "avg_price": str(p.avg_price),
+            "current_price": str(p.current_price),
+            "pnl": str(p.unrealized_pnl),
+            "pnl_pct": round(pnl_pct, 2),
+            "strategy": p.strategy,
+        })
 
     trade_count = 0
     daily_pnl = "0"
+    total_fees = "0"
     if _trade_repo_ref:
         try:
-            daily_pnl = str(_trade_repo_ref.get_daily_pnl())
-            trade_count = _trade_repo_ref.get_daily_trade_count()
+            daily_pnl = str(_trade_repo_ref.get_daily_pnl(market="us"))
+            total_fees = str(_trade_repo_ref.get_daily_fees(market="us"))
+            trade_count = _trade_repo_ref.get_daily_trade_count(market="us")
         except Exception:
             pass
 
     invested = 0
     available_balance = "-"
-    if _engine_ref is not None:
-        for p in _engine_ref.positions.all():
-            invested += int(p.avg_price * p.quantity)
-        try:
-            cash = _engine_ref._cached_available_cash
-            if cash is not None:
-                available_balance = str(round(float(cash - _engine_ref._pending_buy_cost), 2))
-        except Exception:
-            pass
+    pending_order_count = 0
+    for p in _engine_ref.positions.all():
+        invested += int(p.avg_price * p.quantity)
+    try:
+        cash = _engine_ref._cached_available_cash
+        if cash is not None:
+            available_balance = str(round(float(cash - _engine_ref._pending_buy_cost), 2))
+    except Exception:
+        pass
+    pending_order_count = len(_engine_ref.orders.get_pending())
 
     return {
         "status": {
-            "running": _engine_ref._running if _engine_ref else False,
+            "running": _engine_ref._running,
             "balance": _state.last_api_balance if _state else "-",
+            "prev_balance": _state.last_prev_balance if _state else "",
             "invested": str(invested),
             "available_balance": available_balance,
+            "pending_order_count": pending_order_count,
             "daily_pnl": daily_pnl,
+            "total_fees": total_fees,
             "trade_count": trade_count,
             "last_tick_at": _state.last_tick_at if _state else "",
             "position_count": len(positions),
@@ -144,16 +178,63 @@ async def health() -> dict[str, Any]:
     }
 
 
+@us_router.get("/market-hours")
+async def market_hours() -> dict[str, Any]:
+    """미국장 시간을 KST로 변환하여 반환. 서머타임 자동 대응."""
+    from datetime import datetime, timedelta
+    from zoneinfo import ZoneInfo
+    et = ZoneInfo("US/Eastern")
+    kst = ZoneInfo("Asia/Seoul")
+    now_et = datetime.now(et)
+    is_dst = now_et.dst() is not None and now_et.dst().total_seconds() > 0
+    def to_kst(h: int, m: int = 0) -> str:
+        t = now_et.replace(hour=h, minute=m, second=0, microsecond=0)
+        if h < 12:
+            t += timedelta(days=1)
+        return t.astimezone(kst).strftime("%H:%M")
+    return {
+        "is_dst": is_dst,
+        "pre_market_open": to_kst(4, 0),
+        "market_open": to_kst(9, 30),
+        "market_close": to_kst(16, 0),
+        "after_hours_close": to_kst(20, 0),
+    }
+
+
 @us_router.get("/status")
 async def get_status() -> dict[str, Any]:
     mock = settings.get("mock", True)
+    if _engine_ref is None:
+        return {
+            "running": False, "balance": "-", "prev_balance": "",
+            "daily_pnl": "0", "total_fees": "0", "trade_count": 0,
+            "last_tick_at": "", "position_count": 0, "screening_count": 0,
+            "mock": mock, "market": "us", "currency": "USD",
+            "strategies": {}, "strategy_enabled": {},
+            "trading_started": False, "market_condition": {},
+        }
+
     strategy_names = {s.name: s.display_name for s in _registry_ref.all()} if _registry_ref else {}
     strategy_enabled = {s.name: s.enabled for s in _registry_ref.all()} if _registry_ref else {}
-    pos_count = len(_engine_ref.positions.all()) if _engine_ref else 0
+    pos_count = len(_engine_ref.positions.all())
+    daily_pnl = "0"
+    total_fees = "0"
+    trade_count = 0
+    if _trade_repo_ref:
+        try:
+            daily_pnl = str(_trade_repo_ref.get_daily_pnl(market="us"))
+            total_fees = str(_trade_repo_ref.get_daily_fees(market="us"))
+            trade_count = _trade_repo_ref.get_daily_trade_count(market="us")
+        except Exception:
+            pass
 
     return {
-        "running": _engine_ref._running if _engine_ref else False,
+        "running": _engine_ref._running,
         "balance": _state.last_api_balance if _state else "-",
+        "prev_balance": _state.last_prev_balance if _state else "",
+        "daily_pnl": daily_pnl,
+        "total_fees": total_fees,
+        "trade_count": trade_count,
         "last_tick_at": _state.last_tick_at if _state else "",
         "position_count": pos_count,
         "screening_count": len(_state.screening_symbols) if _state else 0,
@@ -208,7 +289,7 @@ async def get_trades() -> list[dict[str, Any]]:
     if not _trade_repo_ref:
         return []
     try:
-        return _trade_repo_ref.get_trades_today()
+        return _trade_repo_ref.get_trades_today(market="us")
     except Exception:
         return []
 
@@ -277,6 +358,25 @@ async def stop_engine() -> dict[str, Any]:
     return {"success": True}
 
 
+@us_router.post("/actions/cancel-all-orders")
+async def cancel_all_orders() -> dict[str, Any]:
+    if _engine_ref is None:
+        return {"success": False, "error": "engine not available"}
+    broker = _engine_ref._broker
+    if not broker._connected:
+        return {"success": False, "error": "broker not connected"}
+    try:
+        count = await broker.cancel_all_orders()
+        if count > 0:
+            await _engine_ref.sync_positions()
+            if _state:
+                _state.symbol_names.update(broker._position_names)
+        logger.info("us_dashboard.cancel_all_orders", count=count)
+        return {"success": True, "cancelled": count}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
 @us_router.post("/actions/liquidate")
 async def liquidate_all() -> dict[str, Any]:
     if _engine_ref is None:
@@ -336,6 +436,118 @@ async def sse_stream() -> StreamingResponse:
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
     )
+
+
+@us_router.get("/balance")
+async def get_balance() -> dict[str, Any]:
+    if not _engine_ref or not _engine_ref._broker._connected:
+        return {}
+    try:
+        broker = _engine_ref._broker
+        balance = await broker.get_balance()
+        cash = await broker.get_available_cash()
+        api_balance = str(balance)
+        if _state:
+            _state.last_api_balance = api_balance
+        return {"balance": api_balance, "available_cash": str(cash)}
+    except Exception as e:
+        logger.error("us_api.balance_failed", error=str(e))
+        return {}
+
+
+_perf_cache: dict | None = None
+
+
+@us_router.get("/performance")
+async def get_performance() -> dict[str, Any]:
+    global _perf_cache
+    if not _engine_ref:
+        return {"data": {}}
+    if _perf_cache:
+        return {"data": _perf_cache}
+    if _trade_repo_ref:
+        try:
+            _perf_cache = _trade_repo_ref.get_strategy_performance(market="us")
+            return {"data": _perf_cache}
+        except Exception:
+            pass
+    return {"data": _engine_ref._performance.all_stats()}
+
+
+@us_router.get("/performance/history")
+async def get_performance_history() -> dict[str, Any]:
+    if not _trade_repo_ref:
+        return {"data": []}
+    try:
+        return {"data": _trade_repo_ref.get_daily_performance_history(market="us")}
+    except Exception:
+        return {"data": []}
+
+
+@us_router.get("/quant/scan")
+async def quant_scan(refresh: bool = False) -> dict[str, Any]:
+    global _last_quant_scan
+    if _last_quant_scan and not refresh:
+        return {"data": _last_quant_scan, "cached": True}
+    if not _engine_ref:
+        return {"data": []}
+    try:
+        from scalpy.screening.us_screener import USQuantScreener, scan_us_market
+
+        broker = _engine_ref._broker
+        stocks = await scan_us_market(broker, count=50)
+        if not stocks:
+            return {"data": []}
+
+        universe = [s["symbol"] for s in stocks]
+        names = {s["symbol"]: s.get("name", "") for s in stocks}
+        live_data = {
+            s["symbol"]: {
+                "change_rate": s.get("change_rate", 0.0),
+                "volume": s.get("volume", 0),
+                "amount": s.get("amount", 0),
+            }
+            for s in stocks
+        }
+        if _state and names:
+            _state.symbol_names.update({k: v for k, v in names.items() if v})
+
+        screener = USQuantScreener(
+            max_stocks=settings.get("quant.max_stocks", 10),
+            momentum_days=settings.get("quant.momentum_days", 10),
+            min_avg_volume=settings.get("quant.min_avg_volume", 100_000),
+            min_momentum=settings.get("quant.min_momentum", 0.0),
+        )
+        held = [p.symbol for p in _engine_ref.positions.all()]
+        screener.scan(universe, held_symbols=held, live_data=live_data)
+        results = screener.get_last_scan()
+        for r in results:
+            r["name"] = names.get(r["symbol"], r["symbol"])
+        _last_quant_scan = results
+        return {"data": results}
+    except Exception as e:
+        logger.error("us_quant_scan.failed", error=str(e))
+        return {"data": [], "error": str(e)}
+
+
+@us_router.get("/quant/config")
+async def quant_config() -> dict[str, Any]:
+    quant = settings.get("quant", {})
+    strat_configs = settings.get("strategies", {})
+    strats = {}
+    for s in (_registry_ref.all() if _registry_ref else []):
+        if s.name not in _QUANT_STRATEGIES:
+            continue
+        params = dict(strat_configs.get(s.name, {}))
+        params["enabled"] = s.enabled
+        params["display_name"] = s.display_name
+        params["stop_loss_ratio"] = s.stop_loss_ratio
+        params["take_profit_ratio"] = s.take_profit_ratio
+        strats[s.name] = params
+    return {
+        "quant": dict(quant),
+        "strategies": strats,
+    }
 
 
 @us_router.get("/settings")

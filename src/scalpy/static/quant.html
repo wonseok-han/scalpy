@@ -137,7 +137,7 @@
     <a href="/backtest" class="nav-item">백테스트</a>
     <div class="market-toggle">
       <a href="/kr" class="nav-item active" id="mt-kr"><span class="mt-dot live"></span> KRX</a>
-      <a href="/us" class="nav-item" id="mt-us"><span class="mt-dot off"></span> US</a>
+      <a href="javascript:void(0)" class="nav-item" id="mt-us" onclick="switchMarket('us')"><span class="mt-dot off"></span> US</a>
     </div>
   </nav>
 </div>
@@ -452,7 +452,7 @@ function _fmtMs(ms){if(ms<=0)return '00:00:00';const t=Math.floor(ms/1000);retur
 _updateMarketTimer();setInterval(_updateMarketTimer,1000);
 
 // ── State ──
-const _QUANT_NAMES=new Set(['momentum','mean_reversion','factor','ichimoku']);
+const _QUANT_NAMES=new Set(['momentum','mean_reversion','factor','ichimoku','volume_spike']);
 const _systemLabels={'synced':'기존 보유','manual':'수동 매매','unknown':'알 수 없음'};
 let _names={},_quantStrats={},_posCount=0,_marketCondition=null;
 let _allTrades=[],_tradePage=0;const _tradePageSize=10;
@@ -493,6 +493,10 @@ const _stratDescriptions = {
   factor: {
     when: '종목별 차별화장',
     desc: '모멘텀·거래량·호가 3가지 팩터를 가중 합산하여 종합 점수 기반 매매. 시장 전체보다 개별 종목 강도에 집중. 범용성 높으나 신호 빈도 낮음.'
+  },
+  volume_spike: {
+    when: '급등 초기',
+    desc: '1분봉 거래량 3배 폭발 + 가격 급등(0.5~8%) 감지 시 매수. 급등주 초기 진입에 특화. 손절 1.5%, 익절은 trailing stop에 위임.'
   }
 };
 // ── Quant Strategies ──
@@ -575,7 +579,7 @@ function updateStatus(s){
     chip.style.display='';
     const regimeMap={bullish:'강세',bearish:'약세',sideways:'횡보'};
     const colorMap={bullish:'var(--profit)',bearish:'var(--loss)',sideways:'var(--text-secondary)'};
-    const recNames={ichimoku:'일목균형',momentum:'모멘텀 돌파',mean_reversion:'평균회귀',factor:'팩터'};
+    const recNames={ichimoku:'일목균형',momentum:'모멘텀 돌파',mean_reversion:'평균회귀',factor:'팩터',volume_spike:'거래량폭발'};
     const recStr=mc.recommend.map(r=>recNames[r]||r).join(', ');
     const el=document.getElementById('market-regime');
     el.innerHTML=`<span style="color:${colorMap[mc.regime]}">${regimeMap[mc.regime]}</span> <span style="font-size:0.7rem;color:var(--text-tertiary)">${mc.avg_change>=0?'+':''}${mc.avg_change}% · 상승 ${mc.adv_ratio}%</span>`;
@@ -876,7 +880,7 @@ async function loadMarketCondition(){
       chip.style.display='';
       const regimeMap={bullish:'강세',bearish:'약세',sideways:'횡보'};
       const colorMap={bullish:'var(--profit)',bearish:'var(--loss)',sideways:'var(--text-secondary)'};
-      const recNames={ichimoku:'일목균형',momentum:'모멘텀 돌파',mean_reversion:'평균회귀',factor:'팩터'};
+      const recNames={ichimoku:'일목균형',momentum:'모멘텀 돌파',mean_reversion:'평균회귀',factor:'팩터',volume_spike:'거래량폭발'};
       const recStr=mc.recommend.map(r=>recNames[r]||r).join(', ');
       const el=document.getElementById('market-regime');
       el.innerHTML=`<span style="color:${colorMap[mc.regime]}">${regimeMap[mc.regime]}</span> <span style="font-size:0.7rem;color:var(--text-tertiary)">${mc.avg_change>=0?'+':''}${mc.avg_change}% · 상승 ${mc.adv_ratio}%</span>`;
@@ -1023,8 +1027,21 @@ fetch('/api/market').then(r=>r.json()).then(d=>{
   const kr=document.getElementById('mt-kr'),us=document.getElementById('mt-us');
   kr.querySelector('.mt-dot').className='mt-dot '+(d.market==='kr'?'live':'off');
   us.querySelector('.mt-dot').className='mt-dot '+(d.market==='us'?'live':'off');
-  if(d.market==='us'){kr.classList.remove('active');us.classList.add('active');}
+  if(d.market!=='kr'){
+    if(confirm('현재 서버가 US 모드입니다. KRX 모드로 전환하시겠습니까?')){
+      switchMarket('kr');
+    }
+  }
 }).catch(()=>{});
+
+async function switchMarket(target){
+  try{
+    const r=await fetch('/api/market/switch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({market:target})});
+    const d=await r.json();
+    if(d.success){location.href='/'+target;}
+    else{alert(d.error||'전환 실패');}
+  }catch(e){alert('서버 연결 실패');}
+}
 </script>
 </body>
 </html>

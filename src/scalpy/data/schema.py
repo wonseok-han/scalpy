@@ -34,6 +34,7 @@ class TradeRow(Base):
     fee: Mapped[int] = mapped_column(default=0)
     pnl: Mapped[int | None] = mapped_column(nullable=True)
     mock: Mapped[bool] = mapped_column(sa.Boolean, default=True, server_default=sa.text("true"))
+    market: Mapped[str] = mapped_column(sa.String(4), default="kr", server_default=sa.text("'kr'"))
     created_at: Mapped[sa.DateTime] = mapped_column(
         sa.DateTime(timezone=True), server_default=sa.func.now()
     )

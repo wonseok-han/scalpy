@@ -53,11 +53,15 @@ class KISOverseasBroker(BaseBroker):
         self._acnt_prdt_cd = account_no[8:].lstrip("-") or "01"
         self._mock = mock
         self._exchange = exchange
+        self._symbol_exchange: dict[str, str] = {}
         self._connected = False
         self._token: str = ""
         self._token_expires: datetime = datetime.min
         self._last_api_call: float = 0
         self._api_lock = asyncio.Lock()
+
+    def _get_exchange(self, symbol: str) -> str:
+        return self._symbol_exchange.get(symbol, self._exchange)
 
     def _base_url(self) -> str:
         key = "virtual" if self._mock else "real"
@@ -86,7 +90,8 @@ class KISOverseasBroker(BaseBroker):
             data = json.loads(_TOKEN_PATH.read_text())
             expires = datetime.fromisoformat(data["valid_until"])
             if expires > datetime.now() + timedelta(minutes=5):
-                self._token = f"Bearer {data['value']}"
+                raw = data["value"]
+                self._token = raw if raw.startswith("Bearer ") else f"Bearer {raw}"
                 self._token_expires = expires
                 return
 
@@ -104,7 +109,8 @@ class KISOverseasBroker(BaseBroker):
             "value": token_val,
             "valid_until": expires.isoformat(),
         }))
-        self._token = f"Bearer {token_val}"
+        raw = token_val
+        self._token = raw if raw.startswith("Bearer ") else f"Bearer {raw}"
         self._token_expires = expires
         logger.info("kis_overseas.token_created")
 
@@ -173,11 +179,12 @@ class KISOverseasBroker(BaseBroker):
             else:
                 tr_id = "TTTT1006U"
 
+            exg = self._get_exchange(order.symbol)
             price_str = f"{float(order.price):.2f}" if order.order_type == OrderType.LIMIT else "0"
             body = {
                 "CANO": self._cano,
                 "ACNT_PRDT_CD": self._acnt_prdt_cd,
-                "OVRS_EXCG_CD": self._exchange,
+                "OVRS_EXCG_CD": exg,
                 "PDNO": order.symbol,
                 "ORD_QTY": str(order.quantity),
                 "OVRS_ORD_UNPR": price_str,
@@ -235,48 +242,56 @@ class KISOverseasBroker(BaseBroker):
     async def cancel_all_orders(self) -> int:
         if not self._connected:
             return 0
-        await self._throttle()
-        try:
-            params = {
-                "CANO": self._cano,
-                "ACNT_PRDT_CD": self._acnt_prdt_cd,
-                "OVRS_EXCG_CD": self._exchange,
-                "SORT_SQN": "DS",
-                "CTX_AREA_FK200": "",
-                "CTX_AREA_NK200": "",
-            }
-            data = await asyncio.to_thread(
-                self._get, "/uapi/overseas-stock/v1/trading/inquire-nccs", "TTTS3018R", params
-            )
-            orders = data.get("output", [])
-            cancelled = 0
-            for o in orders:
-                odno = o.get("odno", "")
-                if odno and await self.cancel_order(odno):
-                    cancelled += 1
-            return cancelled
-        except Exception as e:
-            logger.error("kis_overseas.cancel_all_failed", error=str(e))
-            return 0
+        cancelled = 0
+        for exg_code in _EXCHANGE_MAP:
+            await self._throttle()
+            try:
+                params = {
+                    "CANO": self._cano,
+                    "ACNT_PRDT_CD": self._acnt_prdt_cd,
+                    "OVRS_EXCG_CD": exg_code,
+                    "SORT_SQN": "DS",
+                    "CTX_AREA_FK200": "",
+                    "CTX_AREA_NK200": "",
+                }
+                data = await asyncio.to_thread(
+                    self._get, "/uapi/overseas-stock/v1/trading/inquire-nccs", "TTTS3018R", params
+                )
+                orders = data.get("output", [])
+                for o in orders:
+                    odno = o.get("odno", "")
+                    if odno and await self.cancel_order(odno):
+                        cancelled += 1
+            except Exception as e:
+                logger.warning("kis_overseas.cancel_all_partial", exchange=exg_code, error=str(e))
+        return cancelled
 
     async def sync_positions(self) -> int:
         if not self._connected:
             return 0
 
-        await self._throttle()
+        items: list[dict] = []
+        for exg_code in _EXCHANGE_MAP:
+            await self._throttle()
+            try:
+                params = {
+                    "CANO": self._cano,
+                    "ACNT_PRDT_CD": self._acnt_prdt_cd,
+                    "OVRS_EXCG_CD": exg_code,
+                    "TR_CRCY_CD": "USD",
+                    "CTX_AREA_FK200": "",
+                    "CTX_AREA_NK200": "",
+                }
+                data = await asyncio.to_thread(
+                    self._get, "/uapi/overseas-stock/v1/trading/inquire-balance", "TTTS3012R", params
+                )
+                for item in data.get("output1", []):
+                    item["_exg_code"] = exg_code
+                    items.append(item)
+            except Exception as e:
+                logger.warning("kis_overseas.sync_partial", exchange=exg_code, error=str(e))
+
         try:
-            params = {
-                "CANO": self._cano,
-                "ACNT_PRDT_CD": self._acnt_prdt_cd,
-                "OVRS_EXCG_CD": self._exchange,
-                "TR_CRCY_CD": "USD",
-                "CTX_AREA_FK200": "",
-                "CTX_AREA_NK200": "",
-            }
-            data = await asyncio.to_thread(
-                self._get, "/uapi/overseas-stock/v1/trading/inquire-balance", "TTTS3012R", params
-            )
-            items = data.get("output1", [])
             api_positions: dict[str, Position] = {}
             for item in items:
                 qty = int(item.get("ovrs_cblc_qty", "0"))
@@ -288,6 +303,8 @@ class KISOverseasBroker(BaseBroker):
                     continue
                 name = item.get("ovrs_item_name", symbol)
                 self._position_names[symbol] = name
+                if "_exg_code" in item:
+                    self._symbol_exchange[symbol] = item["_exg_code"]
                 pnl = Decimal(item.get("frcr_evlu_pfls_amt", "0"))
                 pnl_rt = float(item.get("evlu_pfls_rt", "0"))
                 api_positions[symbol] = Position(
@@ -326,27 +343,20 @@ class KISOverseasBroker(BaseBroker):
     async def get_balance(self) -> Decimal:
         if not self._connected:
             return Decimal("0")
-        await self._throttle()
         try:
-            params = {
-                "CANO": self._cano,
-                "ACNT_PRDT_CD": self._acnt_prdt_cd,
-                "OVRS_EXCG_CD": self._exchange,
-                "TR_CRCY_CD": "USD",
-                "CTX_AREA_FK200": "",
-                "CTX_AREA_NK200": "",
-            }
-            data = await asyncio.to_thread(
-                self._get, "/uapi/overseas-stock/v1/trading/inquire-balance", "TTTS3012R", params
-            )
-            out2 = data.get("output2", {})
-            total = out2.get("tot_evlu_pfls_amt", "0")
-            return Decimal(str(total))
+            cash = await self.get_available_cash()
+            pos_value = Decimal("0")
+            for pos in self._pm._positions.values():
+                pos_value += pos.current_price * pos.quantity
+            total = cash + pos_value
+            logger.debug("kis_overseas.balance", cash=str(cash), positions=str(pos_value), total=str(total))
+            return total
         except Exception as e:
             logger.warning("kis_overseas.balance_failed", error=str(e))
             return Decimal("0")
 
     async def get_available_cash(self) -> Decimal:
+        """TTTS3007R (매수가능금액) — ITEM_CD 필수이므로 AAPL 기준 조회."""
         if not self._connected:
             return Decimal("0")
         await self._throttle()
@@ -356,28 +366,51 @@ class KISOverseasBroker(BaseBroker):
                 "ACNT_PRDT_CD": self._acnt_prdt_cd,
                 "OVRS_EXCG_CD": self._exchange,
                 "OVRS_ORD_UNPR": "0",
-                "ITEM_CD": "",
+                "ITEM_CD": "AAPL",
             }
             data = await asyncio.to_thread(
                 self._get, "/uapi/overseas-stock/v1/trading/inquire-psamount", "TTTS3007R", params
             )
+            if data.get("rt_cd") != "0":
+                logger.warning("kis_overseas.cash_api_error",
+                               msg=data.get("msg1", ""))
+                return Decimal("0")
             output = data.get("output", {})
-            cash = output.get("ovrs_ord_psbl_amt", "0")
-            return Decimal(str(cash))
+            cash = output.get("ord_psbl_frcr_amt", "0")
+            return Decimal(str(cash or "0"))
         except Exception as e:
             logger.warning("kis_overseas.available_cash_failed", error=str(e))
             return Decimal("0")
 
     async def get_buyable_qty(self, symbol: str, price: Decimal) -> int:
-        cash = await self.get_available_cash()
-        if price <= 0:
+        if not self._connected or price <= 0:
             return 0
+        await self._throttle()
+        try:
+            exg = self._get_exchange(symbol)
+            params = {
+                "CANO": self._cano,
+                "ACNT_PRDT_CD": self._acnt_prdt_cd,
+                "OVRS_EXCG_CD": exg,
+                "OVRS_ORD_UNPR": f"{float(price):.2f}",
+                "ITEM_CD": symbol,
+            }
+            data = await asyncio.to_thread(
+                self._get, "/uapi/overseas-stock/v1/trading/inquire-psamount", "TTTS3007R", params
+            )
+            output = data.get("output", {})
+            qty = int(output.get("max_ord_psbl_qty", "0"))
+            if qty > 0:
+                return qty
+        except Exception:
+            pass
+        cash = await self.get_available_cash()
         return int(cash / price)
 
     async def get_minute_candles(self, symbol: str, count: int = 60) -> list[dict]:
         if not self._connected:
             return []
-        excd = _EXCHANGE_MAP.get(self._exchange, "NAS")
+        excd = _EXCHANGE_MAP.get(self._get_exchange(symbol), "NAS")
         await self._throttle()
         try:
             params = {
@@ -417,94 +450,97 @@ class KISOverseasBroker(BaseBroker):
     async def get_trade_history(self) -> list[dict[str, Any]]:
         if not self._connected:
             return []
-        await self._throttle()
-        try:
-            today = datetime.now().strftime("%Y%m%d")
-            params = {
-                "CANO": self._cano,
-                "ACNT_PRDT_CD": self._acnt_prdt_cd,
-                "PDNO": "",
-                "ORD_STRT_DT": today,
-                "ORD_END_DT": today,
-                "SLL_BUY_DVSN": "00",
-                "CCLD_NCCS_DVSN": "00",
-                "OVRS_EXCG_CD": self._exchange,
-                "SORT_SQN": "DS",
-                "ORD_DT": "",
-                "ORD_GNO_BRNO": "",
-                "ODNO": "",
-                "CTX_AREA_FK200": "",
-                "CTX_AREA_NK200": "",
-            }
-            data = await asyncio.to_thread(
-                self._get, "/uapi/overseas-stock/v1/trading/inquire-ccnl", "TTTS3035R", params
-            )
-            items = data.get("output", [])
-            trades = []
-            for item in items:
-                ft_ccld_qty = int(item.get("ft_ccld_qty", "0"))
-                if ft_ccld_qty == 0:
-                    continue
-                side_cd = item.get("sll_buy_dvsn_cd", "")
-                trades.append({
-                    "order_no": item.get("odno", ""),
-                    "order_date": item.get("ord_dt", ""),
-                    "symbol": item.get("pdno", ""),
-                    "name": item.get("prdt_name", ""),
-                    "side": "sell" if side_cd == "01" else "buy",
-                    "ord_qty": int(item.get("ft_ord_qty", "0")),
-                    "tot_ccld_qty": ft_ccld_qty,
-                    "avg_price": float(item.get("ft_ccld_unpr3", "0")),
-                    "tot_ccld_amt": float(item.get("ft_ccld_amt3", "0")),
-                })
-            return trades
-        except Exception as e:
-            logger.error("kis_overseas.trade_history_failed", error=str(e))
-            return []
+        trades: list[dict[str, Any]] = []
+        today = datetime.now().strftime("%Y%m%d")
+        for exg_code in _EXCHANGE_MAP:
+            await self._throttle()
+            try:
+                params = {
+                    "CANO": self._cano,
+                    "ACNT_PRDT_CD": self._acnt_prdt_cd,
+                    "PDNO": "",
+                    "ORD_STRT_DT": today,
+                    "ORD_END_DT": today,
+                    "SLL_BUY_DVSN": "00",
+                    "CCLD_NCCS_DVSN": "00",
+                    "OVRS_EXCG_CD": exg_code,
+                    "SORT_SQN": "DS",
+                    "ORD_DT": "",
+                    "ORD_GNO_BRNO": "",
+                    "ODNO": "",
+                    "CTX_AREA_FK200": "",
+                    "CTX_AREA_NK200": "",
+                }
+                data = await asyncio.to_thread(
+                    self._get, "/uapi/overseas-stock/v1/trading/inquire-ccnl", "TTTS3035R", params
+                )
+                for item in data.get("output", []):
+                    ft_ccld_qty = int(item.get("ft_ccld_qty", "0"))
+                    if ft_ccld_qty == 0:
+                        continue
+                    side_cd = item.get("sll_buy_dvsn_cd", "")
+                    trades.append({
+                        "order_no": item.get("odno", ""),
+                        "order_date": item.get("ord_dt", ""),
+                        "symbol": item.get("pdno", ""),
+                        "name": item.get("prdt_name", ""),
+                        "side": "sell" if side_cd == "01" else "buy",
+                        "ord_qty": int(item.get("ft_ord_qty", "0")),
+                        "tot_ccld_qty": ft_ccld_qty,
+                        "avg_price": float(item.get("ft_ccld_unpr3", "0")),
+                        "tot_ccld_amt": float(item.get("ft_ccld_amt3", "0")),
+                        "exchange": exg_code,
+                    })
+            except Exception as e:
+                logger.warning("kis_overseas.trade_history_partial", exchange=exg_code, error=str(e))
+        return trades
 
     async def get_top_volume_stocks(self, count: int = 30) -> list[dict[str, Any]]:
         if not self._connected:
             return []
-        await self._throttle()
-        excd = _EXCHANGE_MAP.get(self._exchange, "NAS")
-        try:
-            params = {
-                "AUTH": "",
-                "EXCD": excd,
-                "SYMB": "",
-                "GUBN": "0",
-                "BYMD": "",
-                "MODP": "0",
-                "KEYB": "",
-            }
-            data = await asyncio.to_thread(
-                self._get,
-                "/uapi/overseas-price/v1/quotations/inquire-search",
-                "HHDFS76410000",
-                params,
-            )
-            items = data.get("output2", [])
-            stocks = []
-            for item in items[:count]:
-                symbol = item.get("symb", "")
-                if not symbol:
-                    continue
-                stocks.append({
-                    "symbol": symbol,
-                    "name": item.get("name", ""),
-                    "volume": int(item.get("tvol", 0)),
-                    "price": Decimal(item.get("last", "0")),
-                    "change_rate": float(item.get("rate", "0")),
-                })
-            return stocks
-        except Exception as e:
-            logger.error("kis_overseas.top_volume_failed", error=str(e))
-            return []
+        all_stocks: list[dict[str, Any]] = []
+        for exg_code, excd in _EXCHANGE_MAP.items():
+            await self._throttle()
+            try:
+                params = {
+                    "AUTH": "",
+                    "EXCD": excd,
+                    "SYMB": "",
+                    "GUBN": "0",
+                    "BYMD": "",
+                    "MODP": "0",
+                    "KEYB": "",
+                }
+                data = await asyncio.to_thread(
+                    self._get,
+                    "/uapi/overseas-price/v1/quotations/inquire-search",
+                    "HHDFS76410000",
+                    params,
+                )
+                items = data.get("output2", [])
+                for item in items:
+                    symbol = item.get("symb", "")
+                    if not symbol:
+                        continue
+                    self._symbol_exchange[symbol] = exg_code
+                    all_stocks.append({
+                        "symbol": symbol,
+                        "name": item.get("name", ""),
+                        "volume": int(item.get("tvol", 0)),
+                        "price": Decimal(item.get("last", "0")),
+                        "change_rate": float(item.get("rate", "0")),
+                        "exchange": exg_code,
+                    })
+            except Exception as e:
+                logger.warning("kis_overseas.top_volume_partial", exchange=exg_code, error=str(e))
+        all_stocks.sort(key=lambda s: s["volume"], reverse=True)
+        logger.info("kis_overseas.top_volume_scanned", total=len(all_stocks), exchanges=list(_EXCHANGE_MAP.keys()))
+        return all_stocks[:count]
 
     async def get_current_price(self, symbol: str) -> Decimal:
         if not self._connected:
             return Decimal("0")
-        excd = _EXCHANGE_MAP.get(self._exchange, "NAS")
+        excd = _EXCHANGE_MAP.get(self._get_exchange(symbol), "NAS")
         await self._throttle()
         try:
             params = {

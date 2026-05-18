@@ -35,18 +35,31 @@ def create_app(
 
     sse = SSEManager(bus)
     app.state.sse = sse
+    app.state.engine = engine
+    app.state.stream = stream
+    app.state.bus = bus
+    app.state.registry = registry
+    app.state.trade_repo = trade_repo
+    app.state.current_market = settings.get("market", "kr")
 
-    market = settings.get("market", "kr")
+    market = app.state.current_market
+    other_state = DashboardState()
+    if market == "us":
+        app.state.us_state = state
+        app.state.kr_state = other_state
+    else:
+        app.state.kr_state = state
+        app.state.us_state = other_state
 
     from scalpy.dashboard.routes import init_routes, router
     from scalpy.dashboard.us_routes import init_us_routes, us_router
 
     if market == "us":
-        init_us_routes(state, sse, engine, bus=bus, stream=stream, registry=registry, trade_repo=trade_repo)
-        init_routes(state, sse, None)
+        init_us_routes(app.state.us_state, sse, engine, bus=bus, stream=stream, registry=registry, trade_repo=trade_repo)
+        init_routes(app.state.kr_state, sse, None)
     else:
-        init_routes(state, sse, engine, bus=bus, stream=stream, registry=registry, trade_repo=trade_repo)
-        init_us_routes(state, sse, None)
+        init_routes(app.state.kr_state, sse, engine, bus=bus, stream=stream, registry=registry, trade_repo=trade_repo)
+        init_us_routes(app.state.us_state, sse, None)
 
     app.include_router(router)
     app.include_router(us_router)
@@ -61,7 +74,8 @@ def create_app(
 
     @app.get("/")
     async def index() -> HTMLResponse:
-        html = _US_HTML if market == "us" else _MAIN_HTML
+        m = app.state.current_market
+        html = _US_HTML if m == "us" else _MAIN_HTML
         return HTMLResponse(html.read_text())
 
     @app.get("/kr")
@@ -74,7 +88,112 @@ def create_app(
 
     @app.get("/api/market")
     async def get_market() -> dict[str, str]:
-        return {"market": market}
+        return {"market": app.state.current_market}
+
+    @app.post("/api/market/switch")
+    async def switch_market(body: dict) -> dict[str, Any]:
+        target = body.get("market")
+        if target not in ("kr", "us"):
+            return {"success": False, "error": "invalid market"}
+
+        if target == app.state.current_market:
+            return {"success": True, "market": target}
+
+        eng = app.state.engine
+        if eng and eng._running:
+            return {"success": False, "error": "엔진 실행 중. 먼저 정지하세요."}
+
+        # 기존 스트림/브로커 정리
+        old_stream = app.state.stream
+        if old_stream:
+            await old_stream.stop()
+
+        old_broker = eng._broker if eng else None
+        if old_broker and old_broker._connected:
+            await old_broker.disconnect()
+
+        # settings 런타임 변경
+        settings.set("market", target)
+
+        # 새 컴포넌트 빌드
+        from scalpy.main import build_engine, build_registry
+
+        new_registry = build_registry()
+        new_engine, new_broker = build_engine(new_registry)
+
+        mock = settings.get("mock", True)
+        hts_id = settings.get("kis_hts_id", "")
+
+        if target == "us":
+            from scalpy.data.us_stream import USMarketDataStream
+            exchange = settings.get("us_trading.exchange", "NASD")
+            new_stream = USMarketDataStream(
+                app_key=settings.get("kis_app_key", ""),
+                app_secret=settings.get("kis_app_secret", ""),
+                mock=mock,
+                hts_id=hts_id,
+                exchange=exchange,
+            )
+        else:
+            from scalpy.data.stream import MarketDataStream
+            new_stream = MarketDataStream(
+                app_key=settings.get("kis_app_key", ""),
+                app_secret=settings.get("kis_app_secret", ""),
+                mock=mock,
+                hts_id=hts_id,
+            )
+
+        new_stream.on_tick(new_engine.on_tick)
+        new_stream.on_orderbook(new_engine.on_orderbook)
+        new_stream.on_fill(new_engine.on_fill_notice)
+        new_stream.on_vi(new_engine.on_vi_event)
+
+        new_engine.set_event_bus(app.state.bus)
+
+        if app.state.trade_repo:
+            new_engine.set_trade_repo(app.state.trade_repo)
+            new_engine._performance.set_repo(app.state.trade_repo)
+
+        await new_broker.connect()
+        cancelled = await new_broker.cancel_all_orders()
+        if cancelled > 0:
+            logger.info("market_switch.cleared_orders", count=cancelled)
+        await new_engine.sync_positions()
+        await new_engine.get_cached_balance()
+        new_engine.start_sync_loop()
+
+        # app.state 갱신
+        app.state.engine = new_engine
+        app.state.stream = new_stream
+        app.state.registry = new_registry
+        app.state.current_market = target
+
+        # 대시보드 라우트 재초기화 (마켓별 분리된 state 사용)
+        se = app.state.sse
+        b = app.state.bus
+        tr = app.state.trade_repo
+        kr_st = app.state.kr_state
+        us_st = app.state.us_state
+
+        old_market = "kr" if target == "us" else "us"
+        old_state = kr_st if old_market == "kr" else us_st
+        new_state = us_st if target == "us" else kr_st
+        old_state.unregister_handlers(b)
+        new_state.register_handlers(b)
+
+        synced_names = getattr(new_broker, "_position_names", {})
+        if synced_names:
+            new_state.symbol_names.update(synced_names)
+
+        if target == "us":
+            init_us_routes(us_st, se, new_engine, bus=b, stream=new_stream, registry=new_registry, trade_repo=tr)
+            init_routes(kr_st, se, None)
+        else:
+            init_routes(kr_st, se, new_engine, bus=b, stream=new_stream, registry=new_registry, trade_repo=tr)
+            init_us_routes(us_st, se, None)
+
+        logger.info("market_switch.done", market=target)
+        return {"success": True, "market": target}
 
     @app.get("/backtest")
     async def backtest_page() -> HTMLResponse:

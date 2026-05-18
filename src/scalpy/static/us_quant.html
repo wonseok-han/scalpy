@@ -136,7 +136,7 @@
     <span class="nav-sep"></span>
     <a href="/backtest" class="nav-item">백테스트</a>
     <div class="market-toggle">
-      <a href="/kr" class="nav-item" id="mt-kr"><span class="mt-dot off"></span> KRX</a>
+      <a href="javascript:void(0)" class="nav-item" id="mt-kr" onclick="switchMarket('kr')"><span class="mt-dot off"></span> KRX</a>
       <a href="/us" class="nav-item active" id="mt-us"><span class="mt-dot live"></span> US</a>
     </div>
   </nav>
@@ -432,33 +432,41 @@ const usd=n=>{const v=Number(n);if(isNaN(v))return String(n);const a=Math.abs(v)
 const usdPnl=n=>{const v=Number(n);const a=Math.abs(v).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});return v>=0?'+$'+a:'-$'+a;};
 
 // ── Market Timer (US KST: Pre 18:00~23:30, Regular 23:30~06:00, After 06:00~07:00) ──
+// 서버에서 KST 변환된 미국장 시간을 받아옴 (서머타임 자동 대응)
+let _mh={pre:17*60,open:22*60+30,close:5*60,after:9*60};
+fetch('/api/us/market-hours').then(r=>r.json()).then(d=>{
+  const p=s=>{const[h,m]=s.split(':').map(Number);return h*60+m;};
+  _mh={pre:p(d.pre_market_open),open:p(d.market_open),close:p(d.market_close),after:p(d.after_hours_close)};
+}).catch(()=>{});
 function _updateMarketTimer(){
   const now=new Date();
   const hh=String(now.getHours()).padStart(2,'0'),mm=String(now.getMinutes()).padStart(2,'0'),ss=String(now.getSeconds()).padStart(2,'0');
   document.getElementById('mt-clock').textContent=`${hh}:${mm}:${ss}`;
   const h=now.getHours(),m=now.getMinutes(),nowMin=h*60+m,day=now.getDay();
   const statusEl=document.getElementById('mt-status'),labelEl=document.getElementById('mt-label'),remainEl=document.getElementById('mt-remaining');
-  // After-hours 06:00~07:00 (Tue~Sat = following Mon~Fri sessions)
-  if(nowMin>=360&&nowMin<420&&day>=2&&day<=6){statusEl.textContent='시간외';statusEl.className='mt-status after';labelEl.textContent='시간외 종료까지';const t=new Date(now);t.setHours(7,0,0,0);remainEl.textContent=_fmtMs(t-now);return;}
-  // Regular pre-midnight 23:30~23:59 (Mon~Fri)
-  if(nowMin>=1410&&day>=1&&day<=5){statusEl.textContent='정규장';statusEl.className='mt-status open';labelEl.textContent='장 마감까지';const t=new Date(now);t.setDate(t.getDate()+1);t.setHours(6,0,0,0);remainEl.textContent=_fmtMs(t-now);return;}
-  // Regular post-midnight 00:00~06:00 (Tue~Sat)
-  if(nowMin<360&&day>=2&&day<=6){statusEl.textContent='정규장';statusEl.className='mt-status open';labelEl.textContent='장 마감까지';const t=new Date(now);t.setHours(6,0,0,0);remainEl.textContent=_fmtMs(t-now);return;}
-  // Pre-market 18:00~23:30 (Mon~Fri)
-  if(nowMin>=1080&&nowMin<1410&&day>=1&&day<=5){statusEl.textContent='프리마켓';statusEl.className='mt-status pre';labelEl.textContent='정규장까지';const t=new Date(now);t.setHours(23,30,0,0);remainEl.textContent=_fmtMs(t-now);return;}
+  const preM=_mh.pre,openM=_mh.open,closeM=_mh.close,afterM=_mh.after;
+  const _setTarget=(h,m)=>{const t=new Date(now);t.setHours(h,m||0,0,0);return t;};
+  // After-hours close~after (Tue~Sat)
+  if(nowMin>=closeM&&nowMin<afterM&&day>=2&&day<=6){statusEl.textContent='시간외';statusEl.className='mt-status after';labelEl.textContent='시간외 종료까지';remainEl.textContent=_fmtMs(_setTarget(Math.floor(afterM/60),afterM%60)-now);return;}
+  // Regular pre-midnight open~23:59 (Mon~Fri)
+  if(nowMin>=openM&&day>=1&&day<=5){statusEl.textContent='정규장';statusEl.className='mt-status open';labelEl.textContent='장 마감까지';const t=new Date(now);t.setDate(t.getDate()+1);t.setHours(Math.floor(closeM/60),closeM%60,0,0);remainEl.textContent=_fmtMs(t-now);return;}
+  // Regular post-midnight 00:00~close (Tue~Sat)
+  if(nowMin<closeM&&day>=2&&day<=6){statusEl.textContent='정규장';statusEl.className='mt-status open';labelEl.textContent='장 마감까지';remainEl.textContent=_fmtMs(_setTarget(Math.floor(closeM/60),closeM%60)-now);return;}
+  // Pre-market pre~open (Mon~Fri)
+  if(nowMin>=preM&&nowMin<openM&&day>=1&&day<=5){statusEl.textContent='프리마켓';statusEl.className='mt-status pre';labelEl.textContent='정규장까지';remainEl.textContent=_fmtMs(_setTarget(Math.floor(openM/60),openM%60)-now);return;}
   // Closed
   statusEl.textContent='장 마감';statusEl.className='mt-status closed';
-  const target=new Date(now);
-  if(day===6&&nowMin>=420){target.setDate(target.getDate()+2);target.setHours(18,0,0,0);labelEl.textContent='월요일 프리마켓까지';}
-  else if(day===0){target.setDate(target.getDate()+1);target.setHours(18,0,0,0);labelEl.textContent='월요일 프리마켓까지';}
-  else{target.setHours(18,0,0,0);labelEl.textContent='프리마켓까지';}
+  const target=new Date(now);const preH=Math.floor(preM/60),preMin=preM%60;
+  if(day===6&&nowMin>=afterM){target.setDate(target.getDate()+2);target.setHours(preH,preMin,0,0);labelEl.textContent='월요일 프리마켓까지';}
+  else if(day===0){target.setDate(target.getDate()+1);target.setHours(preH,preMin,0,0);labelEl.textContent='월요일 프리마켓까지';}
+  else{target.setHours(preH,preMin,0,0);labelEl.textContent='프리마켓까지';}
   remainEl.textContent=_fmtMs(target-now);
 }
 function _fmtMs(ms){if(ms<=0)return '00:00:00';const t=Math.floor(ms/1000);return String(Math.floor(t/3600)).padStart(2,'0')+':'+String(Math.floor((t%3600)/60)).padStart(2,'0')+':'+String(t%60).padStart(2,'0');}
 _updateMarketTimer();setInterval(_updateMarketTimer,1000);
 
 // ── State ──
-const _QUANT_NAMES=new Set(['momentum','mean_reversion','factor','ichimoku']);
+const _QUANT_NAMES=new Set(['momentum','mean_reversion','factor','ichimoku','volume_spike']);
 const _systemLabels={'synced':'기존 보유','manual':'수동 매매','unknown':'알 수 없음'};
 let _names={},_quantStrats={},_posCount=0,_marketCondition=null;
 let _allTrades=[],_tradePage=0;const _tradePageSize=10;
@@ -499,6 +507,10 @@ const _stratDescriptions = {
   factor: {
     when: '종목별 차별화장',
     desc: '모멘텀·거래량·호가 3가지 팩터를 가중 합산하여 종합 점수 기반 매매. 시장 전체보다 개별 종목 강도에 집중. 범용성 높으나 신호 빈도 낮음.'
+  },
+  volume_spike: {
+    when: '급등 초기',
+    desc: '1분봉 거래량 3배 폭발 + 가격 급등(0.5~8%) 감지 시 매수. 급등주 초기 진입에 특화. 손절 1.5%, 익절은 trailing stop에 위임.'
   }
 };
 // ── Quant Strategies ──
@@ -580,7 +592,7 @@ function updateStatus(s){
     chip.style.display='';
     const regimeMap={bullish:'강세',bearish:'약세',sideways:'횡보'};
     const colorMap={bullish:'var(--profit)',bearish:'var(--loss)',sideways:'var(--text-secondary)'};
-    const recNames={ichimoku:'일목균형',momentum:'모멘텀 돌파',mean_reversion:'평균회귀',factor:'팩터'};
+    const recNames={ichimoku:'일목균형',momentum:'모멘텀 돌파',mean_reversion:'평균회귀',factor:'팩터',volume_spike:'거래량폭발'};
     const recStr=mc.recommend.map(r=>recNames[r]||r).join(', ');
     const el=document.getElementById('market-regime');
     el.innerHTML=`<span style="color:${colorMap[mc.regime]}">${regimeMap[mc.regime]}</span> <span style="font-size:0.7rem;color:var(--text-tertiary)">${mc.avg_change>=0?'+':''}${mc.avg_change}% · 상승 ${mc.adv_ratio}%</span>`;
@@ -881,7 +893,7 @@ async function loadMarketCondition(){
       chip.style.display='';
       const regimeMap={bullish:'강세',bearish:'약세',sideways:'횡보'};
       const colorMap={bullish:'var(--profit)',bearish:'var(--loss)',sideways:'var(--text-secondary)'};
-      const recNames={ichimoku:'일목균형',momentum:'모멘텀 돌파',mean_reversion:'평균회귀',factor:'팩터'};
+      const recNames={ichimoku:'일목균형',momentum:'모멘텀 돌파',mean_reversion:'평균회귀',factor:'팩터',volume_spike:'거래량폭발'};
       const recStr=mc.recommend.map(r=>recNames[r]||r).join(', ');
       const el=document.getElementById('market-regime');
       el.innerHTML=`<span style="color:${colorMap[mc.regime]}">${regimeMap[mc.regime]}</span> <span style="font-size:0.7rem;color:var(--text-tertiary)">${mc.avg_change>=0?'+':''}${mc.avg_change}% · 상승 ${mc.adv_ratio}%</span>`;
@@ -1028,8 +1040,21 @@ fetch('/api/market').then(r=>r.json()).then(d=>{
   const kr=document.getElementById('mt-kr'),us=document.getElementById('mt-us');
   kr.querySelector('.mt-dot').className='mt-dot '+(d.market==='kr'?'live':'off');
   us.querySelector('.mt-dot').className='mt-dot '+(d.market==='us'?'live':'off');
-  if(d.market==='kr'){us.classList.remove('active');kr.classList.add('active');}
+  if(d.market!=='us'){
+    if(confirm('현재 서버가 KRX 모드입니다. US 모드로 전환하시겠습니까?')){
+      switchMarket('us');
+    }
+  }
 }).catch(()=>{});
+
+async function switchMarket(target){
+  try{
+    const r=await fetch('/api/market/switch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({market:target})});
+    const d=await r.json();
+    if(d.success){location.href='/'+target;}
+    else{alert(d.error||'전환 실패');}
+  }catch(e){alert('서버 연결 실패');}
+}
 </script>
 </body>
 </html>

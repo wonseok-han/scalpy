@@ -451,6 +451,8 @@ class TradingEngine:
             return
 
         order = self._orders.signal_to_order(signal, qty)
+        if self._market.is_pre_market():
+            order.order_type = OrderType.LIMIT
 
         if self._bus:
             await self._bus.emit(
