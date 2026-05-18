@@ -15,6 +15,7 @@ from scalpy.strategy.ichimoku import IchimokuStrategy
 from scalpy.strategy.mean_reversion import MeanReversionStrategy
 from scalpy.strategy.momentum import MomentumStrategy
 from scalpy.strategy.registry import StrategyRegistry
+from scalpy.strategy.volume_spike import VolumeSpikeStrategy
 from scalpy.trading.engine import TradingEngine
 from scalpy.trading.risk import RiskManager
 
@@ -28,6 +29,7 @@ def build_registry() -> StrategyRegistry:
         MeanReversionStrategy(),
         FactorStrategy(),
         IchimokuStrategy(),
+        VolumeSpikeStrategy(),
     ]
     quant_enabled = set(settings.get("strategies.quant_enabled", ["momentum"]))
     for s in all_strategies:

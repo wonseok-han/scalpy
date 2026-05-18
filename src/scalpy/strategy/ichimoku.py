@@ -42,6 +42,7 @@ class IchimokuStrategy(BaseStrategy):
         self.stop_loss_ratio: float | None = 0.025
         self.take_profit_ratio: float | None = None
         self.min_tick_volume: int = 5
+        self.max_cloud_distance: float = 0.01
         self.open_grace_candles: int = 10
         self._candles: dict[str, deque[_Candle]] = {}
         self._current_candle: dict[str, _Candle] = {}
@@ -148,9 +149,11 @@ class IchimokuStrategy(BaseStrategy):
             rt = self._realtime_candle_count.get(symbol, 0)
             if rt < self.open_grace_candles:
                 return None
+            spread = float(price - cloud_top) / float(cloud_top) if cloud_top else 0
+            if spread > self.max_cloud_distance:
+                return None
             if not self._check_cooldown(symbol, "BUY"):
                 return None
-            spread = float(price - cloud_top) / float(cloud_top) if cloud_top else 0
             confidence = min(0.85, 0.5 + spread * 20)
             return Signal(symbol, Side.BUY, self.name, price, 0, confidence, now)
 

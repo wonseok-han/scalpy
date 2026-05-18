@@ -98,7 +98,7 @@ chat_id = ""
 
 [default.strategies]
 # 퀀트 활성 전략
-# 사용 가능: momentum, mean_reversion, factor, ichimoku
+# 사용 가능: momentum, mean_reversion, factor, ichimoku, volume_spike
 quant_enabled = []
 
 [default.strategies.momentum]
@@ -160,8 +160,25 @@ min_tick_volume = 5
 cooldown_seconds = 300
 # 장 초반 매수 유예 (실시간 캔들 N개 수집 전까지 BUY 차단, SELL은 허용)
 open_grace_candles = 10
+# 구름 대비 과열 매수 차단 (0.01 = 1%, 구름 상단 대비 이 이상 올라가면 BUY 차단)
+max_cloud_distance = 0.01
 # 추세 추종 — 손절만 설정, 익절은 trailing에 위임
 stop_loss_ratio = 0.02
+
+[default.strategies.volume_spike]
+# 거래량 비교 기준 분봉 수 (최근 N분 평균)
+baseline_window = 10
+# 거래량 급증 배수 (평균 대비 N배 이상이면 폭발 판정)
+spike_ratio = 3.0
+# 최소 가격 상승률 (0.005 = 0.5%, 거래량 폭발 + 이 이상 상승 시 진입)
+min_surge_pct = 0.005
+# 최대 가격 상승률 (0.08 = 8%, 이미 너무 올라간 종목 제외)
+max_surge_pct = 0.08
+# 봉 집계 간격 (분)
+candle_minutes = 1
+cooldown_seconds = 120
+# 급등 추격 — 타이트한 손절, 익절은 trailing에 위임
+stop_loss_ratio = 0.015
 
 [default.us_trading]
 # 미장 자동매매 설정 (market = "us" 일 때 사용)
