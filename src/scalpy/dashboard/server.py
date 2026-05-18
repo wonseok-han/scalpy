@@ -56,10 +56,10 @@ def create_app(
 
     if market == "us":
         init_us_routes(app.state.us_state, sse, engine, bus=bus, stream=stream, registry=registry, trade_repo=trade_repo)
-        init_routes(app.state.kr_state, sse, None)
+        init_routes(app.state.kr_state, sse, None, trade_repo=trade_repo)
     else:
         init_routes(app.state.kr_state, sse, engine, bus=bus, stream=stream, registry=registry, trade_repo=trade_repo)
-        init_us_routes(app.state.us_state, sse, None)
+        init_us_routes(app.state.us_state, sse, None, trade_repo=trade_repo)
 
     app.include_router(router)
     app.include_router(us_router)

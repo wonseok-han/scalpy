@@ -39,6 +39,29 @@ _SSE_EVENTS = [
 
 _QUANT_STRATEGIES = {"momentum", "mean_reversion", "factor", "ichimoku", "volume_spike"}
 
+_standalone_broker: Any = None
+
+
+async def _get_us_broker() -> Any:
+    """엔진 없이도 US 잔고 조회용 브로커를 반환."""
+    global _standalone_broker
+    if _engine_ref and _engine_ref._broker._connected:
+        return _engine_ref._broker
+    if _standalone_broker and _standalone_broker._connected:
+        return _standalone_broker
+    from scalpy.broker.kis_overseas import KISOverseasBroker
+    b = KISOverseasBroker(
+        app_key=settings.get("kis_app_key", ""),
+        app_secret=settings.get("kis_app_secret", ""),
+        account_no=settings.get("kis_account_no", ""),
+        mock=settings.get("mock", True),
+        exchange=settings.get("us_trading.exchange", "NASD"),
+    )
+    await b.connect()
+    if b._connected:
+        _standalone_broker = b
+    return b
+
 
 def init_us_routes(
     state: DashboardState,
@@ -90,18 +113,31 @@ def _on_state_change(data: dict[str, Any]) -> None:
 
 
 def _build_sse_state() -> dict[str, Any]:
+    trade_count = 0
+    daily_pnl = "0"
+    total_fees = "0"
+    if _trade_repo_ref:
+        try:
+            daily_pnl = str(_trade_repo_ref.get_daily_pnl(market="us"))
+            total_fees = str(_trade_repo_ref.get_daily_fees(market="us"))
+            trade_count = _trade_repo_ref.get_daily_trade_count(market="us")
+        except Exception:
+            pass
+
     if _engine_ref is None:
+        balance = _state.last_api_balance if _state and _state.last_api_balance != "-" else "-"
         return {
             "status": {
-                "running": False, "balance": "-", "prev_balance": "",
-                "invested": "0", "available_balance": "-", "pending_order_count": 0,
-                "daily_pnl": "0", "total_fees": "0", "trade_count": 0,
+                "running": False, "balance": balance, "prev_balance": "",
+                "invested": "0", "available_balance": balance if balance != "-" else "-",
+                "pending_order_count": 0,
+                "daily_pnl": daily_pnl, "total_fees": total_fees, "trade_count": trade_count,
                 "last_tick_at": "", "position_count": 0, "screening_count": 0,
                 "currency": "USD",
             },
             "positions": [],
             "screening": {"symbols": [], "names": {}},
-            "market_condition": {},
+            "market_condition": _state.market_condition if _state else {},
         }
 
     names = _state.symbol_names if _state else {}
@@ -118,17 +154,6 @@ def _build_sse_state() -> dict[str, Any]:
             "pnl_pct": round(pnl_pct, 2),
             "strategy": p.strategy,
         })
-
-    trade_count = 0
-    daily_pnl = "0"
-    total_fees = "0"
-    if _trade_repo_ref:
-        try:
-            daily_pnl = str(_trade_repo_ref.get_daily_pnl(market="us"))
-            total_fees = str(_trade_repo_ref.get_daily_fees(market="us"))
-            trade_count = _trade_repo_ref.get_daily_trade_count(market="us")
-        except Exception:
-            pass
 
     invested = 0
     available_balance = "-"
@@ -205,13 +230,25 @@ async def market_hours() -> dict[str, Any]:
 async def get_status() -> dict[str, Any]:
     mock = settings.get("mock", True)
     if _engine_ref is None:
+        balance = _state.last_api_balance if _state and _state.last_api_balance != "-" else "-"
+        daily_pnl = "0"
+        total_fees = "0"
+        trade_count = 0
+        if _trade_repo_ref:
+            try:
+                daily_pnl = str(_trade_repo_ref.get_daily_pnl(market="us"))
+                total_fees = str(_trade_repo_ref.get_daily_fees(market="us"))
+                trade_count = _trade_repo_ref.get_daily_trade_count(market="us")
+            except Exception:
+                pass
         return {
-            "running": False, "balance": "-", "prev_balance": "",
-            "daily_pnl": "0", "total_fees": "0", "trade_count": 0,
+            "running": False, "balance": balance, "prev_balance": "",
+            "daily_pnl": daily_pnl, "total_fees": total_fees, "trade_count": trade_count,
             "last_tick_at": "", "position_count": 0, "screening_count": 0,
             "mock": mock, "market": "us", "currency": "USD",
             "strategies": {}, "strategy_enabled": {},
-            "trading_started": False, "market_condition": {},
+            "trading_started": False,
+            "market_condition": _state.market_condition if _state else {},
         }
 
     strategy_names = {s.name: s.display_name for s in _registry_ref.all()} if _registry_ref else {}
@@ -440,10 +477,10 @@ async def sse_stream() -> StreamingResponse:
 
 @us_router.get("/balance")
 async def get_balance() -> dict[str, Any]:
-    if not _engine_ref or not _engine_ref._broker._connected:
-        return {}
     try:
-        broker = _engine_ref._broker
+        broker = await _get_us_broker()
+        if not broker or not broker._connected:
+            return {}
         balance = await broker.get_balance()
         cash = await broker.get_available_cash()
         api_balance = str(balance)
