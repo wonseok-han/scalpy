@@ -101,9 +101,9 @@ class USQuantScreener:
 
         self._rank(scored, held)
 
-        self._last_scan = scored[:self.max_stocks * 2]
+        self._last_scan = scored[:self.max_stocks]
 
-        selected = [s["symbol"] for s in scored[:self.max_stocks]]
+        selected = [s["symbol"] for s in self._last_scan]
         for h in held:
             if h not in selected:
                 selected.append(h)

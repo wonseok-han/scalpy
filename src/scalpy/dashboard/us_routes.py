@@ -362,13 +362,15 @@ async def start_engine() -> dict[str, Any]:
 
         if _stream_ref:
             held = [p.symbol for p in _engine_ref.positions.all()]
+            if hasattr(_engine_ref._broker, '_symbol_exchange'):
+                _stream_ref.set_symbol_exchanges(_engine_ref._broker._symbol_exchange)
             await _stream_ref.start(list(set(symbols) | set(held)))
 
         await _engine_ref.update_symbols(symbols)
 
         if _bus:
             await _bus.emit("engine.started")
-        return {"success": True, "symbols": symbols}
+        return {"success": True, "symbols": symbols, "scan": _last_quant_scan}
     except Exception as e:
         _trading_started = False
         logger.error("us_dashboard.start_failed", error=str(e))
@@ -676,6 +678,12 @@ async def _do_us_scan() -> list[str]:
     held = [p.symbol for p in _engine_ref.positions.all()]
     selected = screener.scan(universe, held_symbols=held, live_data=live_data)
     _last_quant_scan = screener.get_last_scan()
+    all_names = {**names, **(_state.symbol_names if _state else {})}
+    for r in _last_quant_scan:
+        r["name"] = all_names.get(r["symbol"], r["symbol"])
+
+    if selected and _engine_ref:
+        await _engine_ref.prefill_minute_candles(selected)
 
     return selected
 
@@ -694,6 +702,8 @@ async def _quant_rescan_loop(interval_minutes: int) -> None:
 
             if _engine_ref:
                 if _stream_ref:
+                    if hasattr(_engine_ref._broker, '_symbol_exchange'):
+                        _stream_ref.set_symbol_exchanges(_engine_ref._broker._symbol_exchange)
                     await _stream_ref.update_subscriptions(new_symbols)
                 await _engine_ref.update_symbols(new_symbols)
                 logger.info("us_quant_rescan.updated", symbols=new_symbols)

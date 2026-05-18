@@ -2,12 +2,18 @@
 
 KIS 해외주식 실시간 API를 사용하며, 기존 stream.py(국장)를 수정하지 않는 독립 구현체.
 TR ID: HDFSCNT0 (체결가), HDFSASP0 (호가), H0GSCNI0/H0GSCNI9 (체결통보)
+
+세션별 tr_key prefix:
+  정규장 (KST 22:30~05:00): DNAS/DNYS/DAMS + symbol
+  주간거래 (KST 10:00~16:00): RBAQ/RBAY/RBAA + symbol
+  공백 (KST 05:00~10:00, 16:00~22:30): WS 데이터 없음
 """
 
 import asyncio
 import contextlib
 import json
 from collections.abc import Callable
+from datetime import datetime, time
 from decimal import Decimal
 from typing import Any
 
@@ -23,11 +29,23 @@ TickCallback = Callable[[str, Decimal, int], Any]
 OrderbookCallback = Callable[[str, list[tuple[Decimal, int]], list[tuple[Decimal, int]]], Any]
 FillCallback = Callable[[dict[str, Any]], Any]
 
-_WS_TR_KEY_PREFIX = {
+_REGULAR_PREFIX = {
     "NASD": "DNAS",
     "NYSE": "DNYS",
     "AMEX": "DAMS",
 }
+
+_EXTENDED_PREFIX = {
+    "NASD": "RBAQ",
+    "NYSE": "RBAY",
+    "AMEX": "RBAA",
+}
+
+
+def _is_extended_hours() -> bool:
+    """KST 기준 주간거래 시간대인지 판별. KIS 주간거래: 10:00~16:00 KST."""
+    now = datetime.now().time()
+    return time(10, 0) <= now < time(16, 0)
 
 
 def _get_ws_url(mock: bool) -> str:
@@ -103,7 +121,7 @@ class USMarketDataStream:
         self._mock = mock
         self._hts_id = hts_id
         self._exchange = exchange
-        self._tr_prefix = _WS_TR_KEY_PREFIX.get(exchange, "DNAS")
+        self._symbol_exchange: dict[str, str] = {}
         self._tick_callbacks: list[TickCallback] = []
         self._orderbook_callbacks: list[OrderbookCallback] = []
         self._fill_callbacks: list[FillCallback] = []
@@ -149,8 +167,16 @@ class USMarketDataStream:
             if asyncio.iscoroutine(result):
                 await result
 
+    def set_symbol_exchanges(self, mapping: dict[str, str]) -> None:
+        self._symbol_exchange.update(mapping)
+
     def _tr_key(self, symbol: str) -> str:
-        return f"{self._tr_prefix}{symbol}"
+        exg = self._symbol_exchange.get(symbol, self._exchange)
+        if _is_extended_hours():
+            prefix = _EXTENDED_PREFIX.get(exg, "RBAQ")
+        else:
+            prefix = _REGULAR_PREFIX.get(exg, "DNAS")
+        return f"{prefix}{symbol}"
 
     async def start(self, symbols: list[str]) -> None:
         await self._cleanup_recv_task()
@@ -185,7 +211,10 @@ class USMarketDataStream:
             await asyncio.sleep(0.1)
 
         self._subscribed = set(symbols)
-        logger.info("us_stream.started", symbols=symbols, exchange=self._exchange)
+        session = "extended" if _is_extended_hours() else "regular"
+        sample_key = self._tr_key(symbols[0]) if symbols else ""
+        logger.info("us_stream.started", symbols=symbols, exchange=self._exchange,
+                     session=session, tr_key_sample=sample_key)
         self._recv_task = asyncio.create_task(self._recv_loop())
 
     async def _recv_loop(self) -> None:
@@ -270,24 +299,32 @@ class USMarketDataStream:
                 else:
                     logger.warning("us_stream.sub_error", tr_id=tr_id, msg=msg1)
 
+    @staticmethod
+    def _strip_prefix(raw_symbol: str) -> str:
+        """tr_key prefix(4자) 제거: 'DNASNXXT' → 'NXXT'."""
+        return raw_symbol[4:] if len(raw_symbol) > 4 else raw_symbol
+
     async def _on_execution(self, data: str) -> None:
         """HDFSCNT0 필드: SYMB^ZDIV^TYMD^XYMD^XHMS^KYMD^KHMS^OPEN^HIGH^LOW^LAST^SIGN^DIFF^RATE^PBID^PASK^VBID^VASK^EVOL^TVOL^..."""
         fields = data.split("^")
-        symbol = fields[0]
+        symbol = self._strip_prefix(fields[0])
         price = Decimal(fields[10])
-        volume = int(fields[18]) if len(fields) > 18 else 0
+        try:
+            volume = int(float(fields[18])) if len(fields) > 18 and fields[18] else 0
+        except (ValueError, IndexError):
+            volume = 0
         await self.emit_tick(symbol, price, volume)
 
     async def _on_orderbook_data(self, data: str) -> None:
         fields = data.split("^")
-        symbol = fields[0]
+        symbol = self._strip_prefix(fields[0])
         asks: list[tuple[Decimal, int]] = []
         bids: list[tuple[Decimal, int]] = []
         if len(fields) > 15:
             ask_price = Decimal(fields[15]) if fields[15] else Decimal("0")
-            ask_vol = int(fields[17]) if len(fields) > 17 and fields[17] else 0
+            ask_vol = int(float(fields[17])) if len(fields) > 17 and fields[17] else 0
             bid_price = Decimal(fields[14]) if fields[14] else Decimal("0")
-            bid_vol = int(fields[16]) if len(fields) > 16 and fields[16] else 0
+            bid_vol = int(float(fields[16])) if len(fields) > 16 and fields[16] else 0
             if ask_price > 0:
                 asks.append((ask_price, ask_vol))
             if bid_price > 0:
@@ -304,7 +341,7 @@ class USMarketDataStream:
             "symbol": symbol,
             "order_no": fields[2] if len(fields) > 2 else "",
             "side": "sell" if side_cd == "01" else "buy",
-            "quantity": int(fields[9] or "0") if len(fields) > 9 else 0,
+            "quantity": int(float(fields[9] or "0")) if len(fields) > 9 else 0,
             "price": float(fields[10] or "0") if len(fields) > 10 else 0,
             "is_fill": fields[13] == "2" if len(fields) > 13 else False,
             "is_rejected": fields[12] == "1" if len(fields) > 12 else False,

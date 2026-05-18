@@ -186,12 +186,12 @@ auto_start = false
 symbols = ["AAPL", "MSFT", "NVDA"]
 # 기본 거래소 (NASD/NYSE/AMEX, 스크리닝 시 3거래소 자동 통합 스캔)
 exchange = "NASD"
-max_position_size = 10
+max_position_size = 100
 max_position_ratio = 0.5
 max_open_positions = 2
 market_close_liquidate = true
-stop_loss_ratio = 0.02
-take_profit_ratio = 0.05
+stop_loss_ratio = 0.015
+take_profit_ratio = 0.03
 trailing_activate_ratio = 0.015
 trailing_stop_ratio = 0.005
 profit_protect_activate = 0.01

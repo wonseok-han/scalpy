@@ -188,6 +188,8 @@ async def _start_trading(
         trading_key = "us_trading" if market == "us" else "trading"
         symbols = settings.get(f"{trading_key}.symbols", default_sym)
 
+    if hasattr(stream, 'set_symbol_exchanges') and hasattr(engine._broker, '_symbol_exchange'):
+        stream.set_symbol_exchanges(engine._broker._symbol_exchange)
     await stream.start(symbols)
     _prefill_from_ohlcv(engine, symbols)
     await engine.prefill_minute_candles(symbols)

@@ -137,7 +137,7 @@ class TradingEngine:
                 continue
             if hasattr(s, '_candles') and hasattr(s, 'candle_minutes'):
                 candle_strategies.append(s)
-                strat_need = getattr(s, 'senkou_b_period', 0) or getattr(s, 'window', 0)
+                strat_need = getattr(s, 'senkou_b_period', 0) or getattr(s, 'baseline_window', 0) or getattr(s, 'window', 0)
                 candle_min = getattr(s, 'candle_minutes', 1)
                 need = max(need, (strat_need + 5) * candle_min)
         if not candle_strategies:

@@ -239,10 +239,10 @@
           <th>#</th>
           <th>종목</th>
           <th class="text-right">현재가</th>
-          <th class="text-right">모멘텀</th>
-          <th class="text-right">샤프</th>
-          <th class="text-right">거래대금</th>
+          <th class="text-right">등락률</th>
           <th class="text-right">거래량 급증</th>
+          <th class="text-right">거래대금</th>
+          <th class="text-right">모멘텀</th>
           <th class="text-right">ATR%</th>
           <th class="text-right">RSI</th>
           <th class="text-right">점수</th>
@@ -720,18 +720,21 @@ function _renderScanItems(items){
   document.getElementById('candidate-count').textContent=items.length+'개';
   if(!items.length){tb.innerHTML='<tr><td colspan="10" class="empty-row">조건에 맞는 종목 없음</td></tr>';return;}
   tb.innerHTML=items.map((s,i)=>{
-    const pct=100/(1+Math.exp(-2.5*s.score));
+    const pct=100/(1+Math.exp(-2.5*(s.score||0)));
+    const mom=s.momentum||0, sh=s.sharpe||0, at=s.avg_turnover||0, vs=s.volume_surge||0, atr=s.atr_pct||0;
+    const cr=s.change_rate!=null?s.change_rate:0;
+    const turnStr=at>=1e9?'$'+(at/1e9).toFixed(1)+'B':at>=1e6?'$'+(at/1e6).toFixed(1)+'M':at>0?'$'+(at/1e3).toFixed(0)+'K':'-';
     return `<tr>
       <td style="color:var(--text-tertiary)">${i+1}</td>
       <td><strong>${s.name||s.symbol}</strong> <span style="color:var(--text-tertiary);font-size:0.7rem">${s.symbol}</span></td>
-      <td class="text-right">${usd(s.close)}</td>
-      <td class="text-right ${s.momentum>=0?'text-profit':'text-loss'}">${(s.momentum*100).toFixed(1)}%</td>
-      <td class="text-right ${s.sharpe>=0?'text-profit':'text-loss'}">${s.sharpe.toFixed(2)}</td>
-      <td class="text-right">${s.avg_turnover>=1e9?'$'+(s.avg_turnover/1e9).toFixed(1)+'B':s.avg_turnover>=1e6?'$'+(s.avg_turnover/1e6).toFixed(1)+'M':'$'+(s.avg_turnover/1e3).toFixed(0)+'K'}</td>
-      <td class="text-right">${s.volume_surge.toFixed(1)}x</td>
-      <td class="text-right">${(s.atr_pct*100).toFixed(2)}%</td>
+      <td class="text-right">${s.close?usd(s.close):'-'}</td>
+      <td class="text-right ${cr>=0?'text-profit':'text-loss'}">${cr>0?'+':''}${cr.toFixed(1)}%</td>
+      <td class="text-right">${vs>0?vs.toFixed(1)+'x':'-'}</td>
+      <td class="text-right">${turnStr}</td>
+      <td class="text-right ${mom>=0?'text-profit':'text-loss'}">${(mom*100).toFixed(1)}%</td>
+      <td class="text-right">${atr>0?(atr*100).toFixed(2)+'%':'-'}</td>
       <td class="text-right">${s.rsi!=null?s.rsi.toFixed(0):'-'}</td>
-      <td class="text-right">${s.score.toFixed(3)}<span class="score-bar"><span class="score-fill" style="width:${pct}%"></span></span></td>
+      <td class="text-right">${(s.score||0).toFixed(3)}<span class="score-bar"><span class="score-fill" style="width:${pct}%"></span></span></td>
     </tr>`;
   }).join('');
 }
@@ -822,6 +825,7 @@ async function startQuant(){
     if(d.success){
       toast('퀀트 트레이딩 시작 ('+d.symbols.length+'개 종목)','success');
       if(d.scan&&d.scan.length){_renderScanItems(d.scan);try{sessionStorage.setItem('quant_scan',JSON.stringify(d.scan))}catch{}}
+      loadMarketCondition();loadBalance();
     } else toast(d.error||'시작 실패','error');
   }catch(e){toast('오류: '+e.message,'error');}
   finally{btn.classList.remove('loading');btn.textContent='퀀트 시작';}
