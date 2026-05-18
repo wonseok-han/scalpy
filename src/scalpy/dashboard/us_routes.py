@@ -320,7 +320,7 @@ async def start_engine() -> dict[str, Any]:
             quant_symbols = await _quant_start()
             symbols.extend(quant_symbols)
 
-        if not symbols:
+        if not symbols and not quant_on:
             symbols = list(settings.get("us_trading.symbols", ["AAPL"]))
 
         if _stream_ref:
@@ -593,7 +593,22 @@ async def _quant_start() -> list[str]:
     if not _engine_ref:
         return []
 
-    from scalpy.screening.us_screener import USQuantScreener, scan_us_market
+    selected = await _do_us_scan()
+
+    rescan_min = settings.get("quant.rescan_interval_minutes", 30)
+    if rescan_min > 0 and (not _quant_rescan_task or _quant_rescan_task.done()):
+        _quant_rescan_task = asyncio.create_task(_quant_rescan_loop(rescan_min))
+
+    return selected
+
+
+async def _do_us_scan() -> list[str]:
+    """US 종목 스캔 1회 실행. 장 외 시간엔 빈 리스트 반환."""
+    global _last_quant_scan
+    if not _engine_ref:
+        return []
+
+    from scalpy.screening.us_screener import USQuantScreener, scan_us_market, get_market_condition
 
     broker = _engine_ref._broker
     stocks = await scan_us_market(broker, count=50)
@@ -612,8 +627,6 @@ async def _quant_start() -> list[str]:
     }
     if _state and names:
         _state.symbol_names.update({k: v for k, v in names.items() if v})
-
-    from scalpy.screening.us_screener import get_market_condition
     if _state:
         _state.market_condition = get_market_condition()
 
@@ -628,3 +641,30 @@ async def _quant_start() -> list[str]:
     _last_quant_scan = screener.get_last_scan()
 
     return selected
+
+
+async def _quant_rescan_loop(interval_minutes: int) -> None:
+    """주기적으로 US 퀀트 스크리닝을 재실행하여 종목 교체."""
+    while _trading_started:
+        await asyncio.sleep(interval_minutes * 60)
+        if not _trading_started:
+            break
+        try:
+            new_symbols = await _do_us_scan()
+            if not new_symbols:
+                logger.info("us_quant_rescan.no_stocks")
+                continue
+
+            if _engine_ref:
+                if _stream_ref:
+                    await _stream_ref.update_subscriptions(new_symbols)
+                await _engine_ref.update_symbols(new_symbols)
+                logger.info("us_quant_rescan.updated", symbols=new_symbols)
+                if _bus:
+                    names = _state.symbol_names if _state else {}
+                    await _bus.emit("screening.completed", {
+                        "symbols": new_symbols,
+                        "names": {s: names.get(s, s) for s in new_symbols},
+                    })
+        except Exception as e:
+            logger.warning("us_quant_rescan.failed", error=str(e))
