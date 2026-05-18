@@ -512,6 +512,10 @@ async def quant_scan(refresh: bool = False) -> dict[str, Any]:
         if _state and names:
             _state.symbol_names.update({k: v for k, v in names.items() if v})
 
+        from scalpy.screening.us_screener import get_market_condition
+        if _state:
+            _state.market_condition = get_market_condition()
+
         screener = USQuantScreener(
             max_stocks=settings.get("quant.max_stocks", 10),
             momentum_days=settings.get("quant.momentum_days", 10),
