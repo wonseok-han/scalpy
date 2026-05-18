@@ -32,11 +32,11 @@ symbols = ["005930", "000660"]
 # 종목당 최대 보유 수량
 max_position_size = 100
 # 종목당 최대 투입 비율 (0.3 = 잔고의 30%, 가격 × 수량이 이 비율 초과 시 수량 축소)
-max_position_ratio = 0.4
+max_position_ratio = 0.5
 # 동시 보유 최대 포지션 수 (초과 시 신규 매수 차단)
 max_open_positions = 2
 # 장 마감 시 자동 청산 (true: 스캘핑 기본, false: 퀀트 오버나이트 보유)
-market_close_liquidate = true
+market_close_liquidate = false
 # 손절 비율 (0.003 = 0.3%, 평균단가 대비 하락 시 자동 청산)
 stop_loss_ratio = 0.02
 # 익절 비율 (trailing stop 사용 시 비상 상한으로만 동작)
@@ -187,7 +187,7 @@ symbols = ["AAPL", "MSFT", "NVDA"]
 # 거래소 (NASD: 나스닥, NYSE: 뉴욕, AMEX: 아멕스)
 exchange = "NASD"
 max_position_size = 10
-max_position_ratio = 0.4
+max_position_ratio = 0.5
 max_open_positions = 3
 market_close_liquidate = true
 stop_loss_ratio = 0.02
