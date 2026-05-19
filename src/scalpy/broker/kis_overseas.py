@@ -184,7 +184,10 @@ class KISOverseasBroker(BaseBroker):
                 tr_id = "TTTT1002U" if order.side == Side.BUY else "TTTT1006U"
 
             exg = self._get_exchange(order.symbol)
-            price_str = f"{float(order.price):.2f}" if order.price > 0 else "0"
+            if order.order_type == OrderType.MARKET:
+                price_str = "0"
+            else:
+                price_str = f"{float(order.price):.2f}"
             body = {
                 "CANO": self._cano,
                 "ACNT_PRDT_CD": self._acnt_prdt_cd,

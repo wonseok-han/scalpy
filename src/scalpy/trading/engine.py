@@ -62,8 +62,6 @@ class TradingEngine:
         self._last_unfilled_cancel: float = 0
         self._last_daily_init: str = ""
         self._trade_reasons: dict[str, str] = {}
-        self._best_ask: dict[str, Decimal] = {}
-        self._best_bid: dict[str, Decimal] = {}
 
     def set_trade_repo(self, repo: Any) -> None:
         self._trade_repo = repo
@@ -454,32 +452,6 @@ class TradingEngine:
             return
 
         order = self._orders.signal_to_order(signal, qty)
-        # 해외주식: REST API로 실시간 현재가 조회 후 버퍼 적용
-        if hasattr(self._broker, 'get_current_price'):
-            real_price = Decimal("0")
-            try:
-                real_price = await self._broker.get_current_price(signal.symbol)
-            except Exception:
-                pass
-            if real_price <= 0:
-                real_price = signal.price
-
-            buffer = Decimal("0.005")
-            if signal.side == Side.BUY:
-                order.price = real_price * (1 + buffer)
-            else:
-                order.price = real_price * (1 - buffer)
-            order.price = order.price.quantize(Decimal("0.01"))
-            # 가드: 실시간 현재가 vs 시그널가 괴리가 5% 초과 시 차단
-            if signal.price > 0:
-                deviation = abs(float(real_price - signal.price) / float(signal.price))
-                if deviation > 0.05:
-                    logger.warning("engine.price_guard_blocked",
-                                   symbol=signal.symbol, signal_price=str(signal.price),
-                                   real_price=str(real_price), deviation=round(deviation, 4))
-                    return
-        if self._market.is_pre_market():
-            order.order_type = OrderType.LIMIT
 
         if self._bus:
             await self._bus.emit(
