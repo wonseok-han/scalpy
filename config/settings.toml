@@ -1,4 +1,6 @@
 [default]
+# 로그 레벨 (DEBUG/INFO/WARNING/ERROR, 파일로그는 이 레벨, 콘솔은 INFO 고정)
+log_level = "DEBUG"
 # 시장 모드 ("kr": 국내주식, "us": 미국주식)
 market = "kr"
 # 모의투자 모드 (true: 모의투자, false: 실거래)
@@ -37,20 +39,13 @@ max_position_ratio = 0.5
 max_open_positions = 2
 # 장 마감 시 자동 청산 (true: 스캘핑 기본, false: 퀀트 오버나이트 보유)
 market_close_liquidate = false
-# 손절 비율 (0.003 = 0.3%, 평균단가 대비 하락 시 자동 청산)
+# 손절 비율 (0.02 = 2%, 평균단가 대비 하락 시 자동 청산)
 stop_loss_ratio = 0.02
-# 익절 비율 (trailing stop 사용 시 비상 상한으로만 동작)
-take_profit_ratio = 0.03
 # Trailing Stop: 고점 추적 매도
-# 활성화 기준 (0.01 = 1%, 매수가 대비 이 이상 수익 시 고점 추적 시작)
+# 활성화 기준 (0.015 = 1.5%, 매수가 대비 이 이상 수익 시 고점 추적 시작)
 trailing_activate_ratio = 0.015
-# 매도 기준 (0.01 = 1%, 고점 대비 이 이상 하락 시 매도)
+# 매도 기준 (0.005 = 0.5%, 고점 대비 이 이상 하락 시 매도)
 trailing_stop_ratio = 0.005
-# 수익 보호 스탑: trailing 활성화 전 본전 방어
-# 활성화 기준 (0.005 = 0.5%, peak gain이 이 이상 도달한 적 있으면 보호 시작, 0 = 비활성화)
-profit_protect_activate = 0.008
-# 매도 기준 (0.002 = 0.2%, 현재 수익률이 이 이하로 떨어지면 매도)
-profit_protect_ratio = 0.005
 # 강제 청산 분할 매도 횟수 (1 = 전량 일괄, 3 = 3분할 매도, 슬리피지 방지)
 force_close_splits = 3
 # 횡보 청산: N시간 보유 후 수익률이 ±threshold 이내이면 자동 청산 (0 = 비활성화)
@@ -109,9 +104,8 @@ volume_multiplier = 2
 # 고점 돌파 비율 (0.005 = 0.5%, 최근 고점 대비 이 비율 이상 상승 시 진입)
 breakout_pct = 0.01
 cooldown_seconds = 300
-# 단기 퀀트용 손절/익절 (1시간~1일 보유 기준)
+# 단기 퀀트용 손절 (1시간~1일 보유 기준)
 stop_loss_ratio = 0.015
-take_profit_ratio = 0.05
 
 [default.strategies.mean_reversion]
 # 볼린저밴드 관측 윈도우 (분봉 개수)
@@ -125,9 +119,8 @@ min_tick_volume = 5
 cooldown_seconds = 600
 # 장 초반 매수 유예 (실시간 캔들 N개 수집 전까지 BUY 차단, SELL은 허용)
 open_grace_candles = 5
-# 밴드 복귀 대기 시간 감안 넓은 손절/익절
+# 밴드 복귀 대기 시간 감안 넓은 손절
 stop_loss_ratio = 0.01
-take_profit_ratio = 0.04
 
 [default.strategies.factor]
 # 팩터 관측 윈도우
@@ -142,9 +135,8 @@ weight_momentum = 0.4
 weight_volume = 0.3
 weight_orderbook = 0.3
 cooldown_seconds = 180
-# 복합 팩터 — 가장 넓은 손절/익절
+# 복합 팩터 — 넓은 손절
 stop_loss_ratio = 0.015
-take_profit_ratio = 0.04
 
 [default.strategies.ichimoku]
 # 전환선 기간 (봉 수)
@@ -191,11 +183,8 @@ max_position_ratio = 0.5
 max_open_positions = 2
 market_close_liquidate = true
 stop_loss_ratio = 0.015
-take_profit_ratio = 0.03
 trailing_activate_ratio = 0.015
 trailing_stop_ratio = 0.005
-profit_protect_activate = 0.01
-profit_protect_ratio = 0.005
 force_close_splits = 1
 min_hold_seconds = 60
 close_cooldown_seconds = 300

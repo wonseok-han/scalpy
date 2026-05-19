@@ -62,6 +62,8 @@ class TradingEngine:
         self._last_unfilled_cancel: float = 0
         self._last_daily_init: str = ""
         self._trade_reasons: dict[str, str] = {}
+        self._position_pnl: dict[str, Decimal] = {}
+        self._position_strategy: dict[str, str] = {}
 
     def set_trade_repo(self, repo: Any) -> None:
         self._trade_repo = repo
@@ -312,14 +314,21 @@ class TradingEngine:
 
     async def on_fill_notice(self, data: dict[str, Any]) -> None:
         symbol = data["symbol"]
+        order_no = data.get("order_no", "")
+
         if data.get("is_rejected"):
             self._rejected_symbols[symbol] = time.monotonic()
+            if order_no:
+                self._orders.mark_cancelled(order_no)
             logger.warning(
-                "engine.ws_order_rejected", symbol=symbol, order_no=data.get("order_no")
+                "engine.ws_order_rejected", symbol=symbol, order_no=order_no
             )
             return
         if not data.get("is_fill"):
             return
+
+        if order_no:
+            self._orders.mark_filled(order_no)
 
         side = data["side"]
         qty = data["quantity"]
@@ -434,16 +443,23 @@ class TradingEngine:
         else:
             pos = self.positions.get(signal.symbol)
             if pos is None or pos.quantity == 0:
+                logger.debug("engine.sell_blocked", symbol=signal.symbol, reason="no_position", strategy=signal.strategy)
                 return
             if pos.strategy != "synced" and pos.strategy != signal.strategy:
+                logger.debug("engine.sell_blocked", symbol=signal.symbol, reason="strategy_mismatch",
+                             pos_strategy=pos.strategy, signal_strategy=signal.strategy)
                 return
             min_hold = settings.get("trading.min_hold_seconds", 60)
             held = (datetime.now(pos.opened_at.tzinfo) - pos.opened_at).total_seconds()
             if held < min_hold:
+                logger.debug("engine.sell_blocked", symbol=signal.symbol, reason="min_hold",
+                             held_sec=round(held), min_sec=min_hold)
                 return
             gain = (pos.current_price - pos.avg_price) / pos.avg_price if pos.avg_price > 0 else Decimal("0")
             if gain >= Decimal("0") and self._risk.is_trailing_active(pos):
                 if signal.confidence < 0.7:
+                    logger.debug("engine.sell_blocked", symbol=signal.symbol, reason="trailing_active_low_conf",
+                                 gain=str(round(gain, 4)), confidence=signal.confidence)
                     return
             sell_pos = pos
             qty = pos.quantity
@@ -498,6 +514,8 @@ class TradingEngine:
                 )
                 if result.side == Side.BUY:
                     self._trade_reasons[result.symbol] = "signal"
+                    self._position_pnl[result.symbol] = Decimal("0")
+                    self._position_strategy[result.symbol] = result.strategy
                     if self._trade_repo:
                         try:
                             self._trade_repo.save_position_open(result.symbol, result.strategy)
@@ -513,15 +531,20 @@ class TradingEngine:
                         },
                     )
                 elif result.side == Side.SELL:
-                    self._closed_symbols[result.symbol] = time.monotonic()
                     if sell_pos:
                         pnl = (result.price - sell_pos.avg_price) * result.quantity
-                        self._performance.record_trade(result.strategy, pnl, symbol=result.symbol)
-                    if self._trade_repo:
-                        try:
-                            self._trade_repo.close_position(result.symbol)
-                        except Exception:
-                            pass
+                        self._position_pnl[result.symbol] = self._position_pnl.get(result.symbol, Decimal("0")) + pnl
+                    remaining = self.positions.get(result.symbol)
+                    if remaining is None or remaining.quantity == 0:
+                        strat = self._position_strategy.pop(result.symbol, result.strategy)
+                        total = self._position_pnl.pop(result.symbol, Decimal("0"))
+                        self._performance.record_trade(strat, total, symbol=result.symbol)
+                        self._closed_symbols[result.symbol] = time.monotonic()
+                        if self._trade_repo:
+                            try:
+                                self._trade_repo.close_position(result.symbol)
+                            except Exception:
+                                pass
                     self._trade_reasons[result.symbol] = "signal"
                     await self._bus.emit(
                         "position.closed",
@@ -557,29 +580,23 @@ class TradingEngine:
         if self._bus:
             await self._bus.emit("engine.stopped")
 
-    def _get_strategy_risk(self, strategy_name: str) -> tuple[Decimal | None, Decimal | None]:
+    def _get_strategy_sl(self, strategy_name: str) -> Decimal | None:
         strategy = self._registry.get(strategy_name)
         if strategy is None:
-            return None, None
-        sl = Decimal(str(strategy.stop_loss_ratio)) if strategy.stop_loss_ratio is not None else None
-        tp = Decimal(str(strategy.take_profit_ratio)) if strategy.take_profit_ratio is not None else None
-        return sl, tp
+            return None
+        return Decimal(str(strategy.stop_loss_ratio)) if strategy.stop_loss_ratio is not None else None
 
     async def _check_risk(self, symbol: str) -> None:
         pos = self.positions.get(symbol)
         if pos is None:
             return
 
-        sl_ratio, _tp_ratio = self._get_strategy_risk(pos.strategy)
+        sl_ratio = self._get_strategy_sl(pos.strategy)
 
         if self._risk.check_stop_loss(pos, sl_ratio):
             await self._force_close(pos, reason="stop_loss")
         elif self._risk.check_trailing_stop(pos):
             await self._force_close(pos, reason="trailing_stop")
-        elif self._risk.check_take_profit(pos, _tp_ratio):
-            await self._force_close(pos, reason="take_profit")
-        elif self._risk.check_profit_protect(pos):
-            await self._force_close(pos, reason="profit_protect")
         elif self._risk.check_stagnation(pos):
             await self._force_close(pos, reason="stagnation")
 
@@ -652,14 +669,19 @@ class TradingEngine:
                 await asyncio.sleep(_SPLIT_SELL_DELAY)
 
         if total_sold > 0:
-            self._closed_symbols[pos.symbol] = time.monotonic()
+            self._position_pnl[pos.symbol] = self._position_pnl.get(pos.symbol, Decimal("0")) + total_pnl
             self._trade_reasons[pos.symbol] = reason
-            self._performance.record_trade(pos.strategy, total_pnl, symbol=pos.symbol)
-            if self._trade_repo:
-                try:
-                    self._trade_repo.close_position(pos.symbol)
-                except Exception:
-                    pass
+            remaining_pos = self.positions.get(pos.symbol)
+            if remaining_pos is None or remaining_pos.quantity == 0:
+                strat = self._position_strategy.pop(pos.symbol, pos.strategy)
+                total = self._position_pnl.pop(pos.symbol, Decimal("0"))
+                self._performance.record_trade(strat, total, symbol=pos.symbol)
+                self._closed_symbols[pos.symbol] = time.monotonic()
+                if self._trade_repo:
+                    try:
+                        self._trade_repo.close_position(pos.symbol)
+                    except Exception:
+                        pass
             logger.info(
                 "engine.position_force_closed",
                 symbol=pos.symbol, reason=reason,

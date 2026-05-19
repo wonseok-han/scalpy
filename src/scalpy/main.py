@@ -66,6 +66,7 @@ def build_broker() -> BaseBroker:
             account_no=settings.get("kis_account_no", ""),
             mock=mock,
             exchange=exchange,
+            summer_time=settings.get("us_trading.summer_time", True),
         )
 
     from scalpy.broker.kis import KISBroker
@@ -85,7 +86,6 @@ def build_engine(registry: StrategyRegistry) -> tuple[TradingEngine, BaseBroker]
     trading = settings.get(trading_key, {})
     risk = RiskManager(
         stop_loss_ratio=trading.get("stop_loss_ratio", 0.02),
-        take_profit_ratio=trading.get("take_profit_ratio", 0.03),
         max_position_size=trading.get("max_position_size", 100),
         max_open_positions=trading.get("max_open_positions", 3),
         max_position_ratio=trading.get("max_position_ratio", 0.3),
@@ -93,8 +93,6 @@ def build_engine(registry: StrategyRegistry) -> tuple[TradingEngine, BaseBroker]
         stagnation_threshold=trading.get("stagnation_threshold", 0.005),
         trailing_activate_ratio=trading.get("trailing_activate_ratio", 0.01),
         trailing_stop_ratio=trading.get("trailing_stop_ratio", 0.01),
-        profit_protect_activate=trading.get("profit_protect_activate", 0),
-        profit_protect_ratio=trading.get("profit_protect_ratio", 0.001),
     )
     market_config = US_MARKET if market == "us" else KR_MARKET
     return TradingEngine(broker, registry, risk, market_config=market_config), broker
@@ -526,6 +524,11 @@ async def run() -> None:
 
 
 def main() -> None:
+    from scalpy.logging import setup_logging
+
+    log_level = settings.get("log_level", "DEBUG")
+    setup_logging(log_dir="logs", level=log_level)
+
     logger.info("scalpy.initializing", version="0.1.0")
     with contextlib.suppress(KeyboardInterrupt):
         asyncio.run(run())

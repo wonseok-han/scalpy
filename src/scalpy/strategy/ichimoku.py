@@ -40,7 +40,7 @@ class IchimokuStrategy(BaseStrategy):
         self.candle_minutes: int = 1
         self.cooldown_seconds: int = 300
         self.stop_loss_ratio: float | None = 0.025
-        self.take_profit_ratio: float | None = None
+
         self.min_tick_volume: int = 5
         self.max_cloud_distance: float = 0.01
         self.max_candle_range: float = 0.03
@@ -136,7 +136,9 @@ class IchimokuStrategy(BaseStrategy):
             return None
         last = candles[-1]
 
-        if last.close > 0 and float(last.high - last.low) / float(last.close) > self.max_candle_range:
+        candle_range = float(last.high - last.low) / float(last.close) if last.close > 0 else 0
+        if candle_range > self.max_candle_range:
+            logger.debug("ichimoku.skip", symbol=symbol, reason="candle_range", value=round(candle_range, 4), limit=self.max_candle_range)
             return None
 
         candle_count = self._live_candle_count.get(symbol, 0)
@@ -162,11 +164,14 @@ class IchimokuStrategy(BaseStrategy):
         if above_cloud and tk_bull:
             rt = self._realtime_candle_count.get(symbol, 0)
             if rt < self.open_grace_candles:
+                logger.debug("ichimoku.skip", symbol=symbol, reason="grace_period", candles=rt, need=self.open_grace_candles)
                 return None
             spread = float(last_close - cloud_top) / float(cloud_top) if cloud_top else 0
             if spread > self.max_cloud_distance:
+                logger.debug("ichimoku.skip", symbol=symbol, reason="overheated", spread=round(spread, 4), limit=self.max_cloud_distance)
                 return None
             if not self._check_cooldown(symbol, "BUY"):
+                logger.debug("ichimoku.skip", symbol=symbol, reason="cooldown", side="BUY")
                 return None
             confidence = min(0.85, 0.5 + spread * 20)
             return Signal(symbol, Side.BUY, self.name, last_close, 0, confidence, now)

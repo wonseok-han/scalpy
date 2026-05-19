@@ -13,7 +13,7 @@ import asyncio
 import contextlib
 import json
 from collections.abc import Callable
-from datetime import datetime, time
+from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
@@ -22,30 +22,13 @@ import structlog
 import websockets
 
 from scalpy.config import settings
+from scalpy.core.us_market import WS_EXTENDED_PREFIX, WS_REGULAR_PREFIX, get_us_session
 
 logger = structlog.get_logger()
 
 TickCallback = Callable[[str, Decimal, int], Any]
 OrderbookCallback = Callable[[str, list[tuple[Decimal, int]], list[tuple[Decimal, int]]], Any]
 FillCallback = Callable[[dict[str, Any]], Any]
-
-_REGULAR_PREFIX = {
-    "NASD": "DNAS",
-    "NYSE": "DNYS",
-    "AMEX": "DAMS",
-}
-
-_EXTENDED_PREFIX = {
-    "NASD": "RBAQ",
-    "NYSE": "RBAY",
-    "AMEX": "RBAA",
-}
-
-
-def _is_extended_hours() -> bool:
-    """KST 기준 주간거래 시간대인지 판별. KIS 주간거래: 10:00~16:00 KST."""
-    now = datetime.now().time()
-    return time(10, 0) <= now < time(16, 0)
 
 
 def _get_ws_url(mock: bool) -> str:
@@ -173,10 +156,10 @@ class USMarketDataStream:
 
     def _tr_key(self, symbol: str) -> str:
         exg = self._symbol_exchange.get(symbol, self._exchange)
-        if _is_extended_hours():
-            prefix = _EXTENDED_PREFIX.get(exg, "RBAQ")
+        if get_us_session() == "daytime":
+            prefix = WS_EXTENDED_PREFIX.get(exg, "RBAQ")
         else:
-            prefix = _REGULAR_PREFIX.get(exg, "DNAS")
+            prefix = WS_REGULAR_PREFIX.get(exg, "DNAS")
         return f"{prefix}{symbol}"
 
     async def start(self, symbols: list[str]) -> None:
@@ -212,7 +195,7 @@ class USMarketDataStream:
             await asyncio.sleep(0.1)
 
         self._subscribed = set(symbols)
-        session = "extended" if _is_extended_hours() else "regular"
+        session = get_us_session()
         sample_key = self._tr_key(symbols[0]) if symbols else ""
         logger.info("us_stream.started", symbols=symbols, exchange=self._exchange,
                      session=session, tr_key_sample=sample_key)

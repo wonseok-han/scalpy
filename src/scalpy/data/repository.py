@@ -257,15 +257,24 @@ class TradeRepository:
                     sells[0].pnl = actual_pnl
                     corrected += 1
                 else:
-                    total_amt = sum(s.tot_ccld_amt for s in sells) or 1
-                    pnl_remaining = actual_pnl
-                    for i, s in enumerate(sells):
-                        if i == len(sells) - 1:
-                            s.pnl = pnl_remaining
-                        else:
-                            s.pnl = int(actual_pnl * s.tot_ccld_amt / total_amt)
-                            pnl_remaining -= s.pnl
+                    fifo_total = sum(s.pnl for s in sells if s.pnl is not None)
+                    if fifo_total == actual_pnl:
+                        continue
+                    has_fifo = all(s.pnl is not None for s in sells)
+                    if has_fifo:
+                        diff = actual_pnl - fifo_total
+                        sells[-1].pnl += diff
                         corrected += 1
+                    else:
+                        total_amt = sum(s.tot_ccld_amt for s in sells) or 1
+                        pnl_remaining = actual_pnl
+                        for i, s in enumerate(sells):
+                            if i == len(sells) - 1:
+                                s.pnl = pnl_remaining
+                            else:
+                                s.pnl = int(actual_pnl * s.tot_ccld_amt / total_amt)
+                                pnl_remaining -= s.pnl
+                            corrected += 1
 
             if corrected:
                 session.commit()
@@ -459,7 +468,8 @@ class TradeRepository:
 
                     s = stats.setdefault(strat, {
                         "trades": 0, "wins": 0, "losses": 0,
-                        "total_pnl": 0, "max_drawdown": 0, "_peak": 0,
+                        "total_pnl": 0,
+                        "max_drawdown": 0, "_peak": 0,
                         "intraday_trades": 0, "cross_day_trades": 0,
                         "avg_pnl_pct": 0.0, "_pnl_pcts": [],
                     })

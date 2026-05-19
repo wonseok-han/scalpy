@@ -47,7 +47,6 @@ class VolumeSpikeStrategy(BaseStrategy):
         self.lookback: int = 5
         self.cooldown_seconds: int = 120
         self.stop_loss_ratio: float | None = 0.015
-        self.take_profit_ratio: float | None = None
         self.min_tick_volume: int = 1
         self._candles: dict[str, deque[_Candle]] = {}
         self._current_candle: dict[str, _Candle] = {}
@@ -113,22 +112,22 @@ class VolumeSpikeStrategy(BaseStrategy):
         if vol_ratio < self.spike_ratio:
             return None
 
-        # 2) 현재 캔들이 양봉 (상승 중)
         if not cur.is_bullish:
-            logger.info("volume_spike.reject", symbol=symbol, reason="bearish",
-                        open=str(cur.open), close=str(cur.close), vol_ratio=round(vol_ratio, 2))
+            logger.debug("vol_spike.skip", symbol=symbol, reason="bearish",
+                         open=str(cur.open), close=str(cur.close), vol_ratio=round(vol_ratio, 2))
             return None
 
-        # 3) 현재 캔들이 직전 캔들 대비 상승 중 (급등 올라타기)
         prev = candles[-1] if candles else None
         if prev and cur.close < prev.close:
+            logger.debug("vol_spike.skip", symbol=symbol, reason="prev_declining",
+                         cur_close=str(cur.close), prev_close=str(prev.close))
             return None
 
-        # 4) 현재 캔들에 거래가 있는지만 확인
         if cur.volume <= 0:
             return None
 
         if not self._check_cooldown(symbol, "BUY"):
+            logger.debug("vol_spike.skip", symbol=symbol, reason="cooldown", side="BUY")
             return None
 
         confidence = min(0.9, 0.6 + vol_ratio * 0.05)

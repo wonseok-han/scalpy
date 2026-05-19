@@ -6,7 +6,7 @@ KIS Open API의 해외주식 REST/WebSocket 엔드포인트를 사용하며,
 
 import asyncio
 import json
-import time
+import time as time_mod
 from collections.abc import Callable
 from datetime import datetime, timedelta
 from decimal import Decimal
@@ -21,16 +21,11 @@ from scalpy.config import settings
 from scalpy.core.enums import OrderStatus, OrderType, Side
 from scalpy.core.exceptions import AuthenticationError
 from scalpy.core.models import Order, Position
+from scalpy.core.us_market import EXCHANGE_CODE_MAP, get_order_config, get_us_session
 
 logger = structlog.get_logger()
 
 _TOKEN_PATH = Path(__file__).resolve().parent.parent.parent.parent / "config" / ".token.json"
-
-_EXCHANGE_MAP = {
-    "NASD": "NAS",
-    "NYSE": "NYS",
-    "AMEX": "AMS",
-}
 
 
 class KISOverseasBroker(BaseBroker):
@@ -44,6 +39,7 @@ class KISOverseasBroker(BaseBroker):
         *,
         mock: bool = True,
         exchange: str = "NASD",
+        summer_time: bool = True,
     ) -> None:
         super().__init__()
         self._app_key = app_key
@@ -53,6 +49,7 @@ class KISOverseasBroker(BaseBroker):
         self._acnt_prdt_cd = account_no[8:].lstrip("-") or "01"
         self._mock = mock
         self._exchange = exchange
+        self._summer_time = summer_time
         self._symbol_exchange: dict[str, str] = {}
         self._connected = False
         self._token: str = ""
@@ -74,10 +71,10 @@ class KISOverseasBroker(BaseBroker):
     async def _throttle(self) -> None:
         gap = 1.05 if self._mock else 0.15
         async with self._api_lock:
-            elapsed = time.monotonic() - self._last_api_call
+            elapsed = time_mod.monotonic() - self._last_api_call
             if elapsed < gap:
                 await asyncio.sleep(gap - elapsed)
-            self._last_api_call = time.monotonic()
+            self._last_api_call = time_mod.monotonic()
 
     def _ensure_token(self) -> str:
         if self._token and self._token_expires > datetime.now() + timedelta(minutes=5):
@@ -134,10 +131,10 @@ class KISOverseasBroker(BaseBroker):
             msg_cd = body.get("msg_cd", "")
             if "token" in body.get("msg1", "").lower() or msg_cd == "EGW00121":
                 self._refresh_token()
-                time.sleep(0.5)
+                time_mod.sleep(0.5)
                 resp = requests.get(url, headers=self._headers(tr_id), params=params, timeout=10)
             elif msg_cd == "EGW00201":
-                time.sleep(1)
+                time_mod.sleep(1)
                 resp = requests.get(url, headers=self._headers(tr_id), params=params, timeout=10)
             else:
                 resp.raise_for_status()
@@ -151,7 +148,7 @@ class KISOverseasBroker(BaseBroker):
             msg_cd = rj.get("msg_cd", "")
             if "token" in rj.get("msg1", "").lower() or msg_cd == "EGW00121":
                 self._refresh_token()
-                time.sleep(0.5)
+                time_mod.sleep(0.5)
                 resp = requests.post(url, headers=self._headers(tr_id), json=body, timeout=10)
             else:
                 logger.warning("kis_overseas.post_error",
@@ -176,18 +173,28 @@ class KISOverseasBroker(BaseBroker):
             order.status = OrderStatus.REJECTED
             return order
 
+        session = get_us_session(summer_time=self._summer_time)
+        if session == "closed":
+            order.status = OrderStatus.REJECTED
+            order.reject_reason = "US market closed"
+            logger.warning("kis_overseas.market_closed", symbol=order.symbol)
+            return order
+
         await self._throttle()
         try:
-            if self._mock:
-                tr_id = "VTTT1002U" if order.side == Side.BUY else "VTTT1001U"
-            else:
-                tr_id = "TTTT1002U" if order.side == Side.BUY else "TTTT1006U"
+            cfg = get_order_config(session, mock=self._mock)
+            if cfg is None:
+                order.status = OrderStatus.REJECTED
+                order.reject_reason = f"{session} not available"
+                return order
 
-            exg = self._get_exchange(order.symbol)
-            if order.order_type == OrderType.MARKET:
+            tr_id = cfg["tr_id_buy"] if order.side == Side.BUY else cfg["tr_id_sell"]
+            if cfg["market_order_ok"] and order.order_type == OrderType.MARKET:
                 price_str = "0"
             else:
                 price_str = f"{float(order.price):.2f}"
+
+            exg = self._get_exchange(order.symbol)
             body = {
                 "CANO": self._cano,
                 "ACNT_PRDT_CD": self._acnt_prdt_cd,
@@ -198,11 +205,11 @@ class KISOverseasBroker(BaseBroker):
                 "ORD_SVR_DVSN_CD": "0",
                 "ORD_DVSN": "00",
             }
-            if order.side == Side.SELL:
+            if order.side == Side.SELL and session != "daytime":
                 body["SLL_TYPE"] = "00"
 
             data = await asyncio.to_thread(
-                self._post, "/uapi/overseas-stock/v1/trading/order", tr_id, body
+                self._post, cfg["path"], tr_id, body
             )
 
             if data.get("rt_cd") == "0":
@@ -211,7 +218,7 @@ class KISOverseasBroker(BaseBroker):
                 logger.info("kis_overseas.order_submitted",
                             symbol=order.symbol, side=order.side.value,
                             qty=order.quantity, price=price_str,
-                            order_id=order.order_id)
+                            order_id=order.order_id, session=session)
             else:
                 order.status = OrderStatus.REJECTED
                 order.reject_reason = data.get("msg1", "unknown")
@@ -265,7 +272,7 @@ class KISOverseasBroker(BaseBroker):
         if not self._connected:
             return 0
         cancelled = 0
-        for exg_code in _EXCHANGE_MAP:
+        for exg_code in EXCHANGE_CODE_MAP:
             await self._throttle()
             try:
                 params = {
@@ -296,7 +303,7 @@ class KISOverseasBroker(BaseBroker):
             return 0
 
         items: list[dict] = []
-        for exg_code in _EXCHANGE_MAP:
+        for exg_code in EXCHANGE_CODE_MAP:
             await self._throttle()
             try:
                 params = {
@@ -435,7 +442,7 @@ class KISOverseasBroker(BaseBroker):
     async def get_minute_candles(self, symbol: str, count: int = 60) -> list[dict]:
         if not self._connected:
             return []
-        excd = _EXCHANGE_MAP.get(self._get_exchange(symbol), "NAS")
+        excd = EXCHANGE_CODE_MAP.get(self._get_exchange(symbol), "NAS")
         await self._throttle()
         try:
             params = {
@@ -477,7 +484,7 @@ class KISOverseasBroker(BaseBroker):
             return []
         trades: list[dict[str, Any]] = []
         today = datetime.now().strftime("%Y%m%d")
-        for exg_code in _EXCHANGE_MAP:
+        for exg_code in EXCHANGE_CODE_MAP:
             await self._throttle()
             try:
                 params = {
@@ -524,7 +531,7 @@ class KISOverseasBroker(BaseBroker):
         if not self._connected:
             return []
         all_stocks: list[dict[str, Any]] = []
-        for exg_code, excd in _EXCHANGE_MAP.items():
+        for exg_code, excd in EXCHANGE_CODE_MAP.items():
             await self._throttle()
             try:
                 params = {
@@ -559,13 +566,13 @@ class KISOverseasBroker(BaseBroker):
             except Exception as e:
                 logger.warning("kis_overseas.top_volume_partial", exchange=exg_code, error=str(e))
         all_stocks.sort(key=lambda s: s["volume"], reverse=True)
-        logger.info("kis_overseas.top_volume_scanned", total=len(all_stocks), exchanges=list(_EXCHANGE_MAP.keys()))
+        logger.info("kis_overseas.top_volume_scanned", total=len(all_stocks), exchanges=list(EXCHANGE_CODE_MAP.keys()))
         return all_stocks[:count]
 
     async def get_current_price(self, symbol: str) -> Decimal:
         if not self._connected:
             return Decimal("0")
-        excd = _EXCHANGE_MAP.get(self._get_exchange(symbol), "NAS")
+        excd = EXCHANGE_CODE_MAP.get(self._get_exchange(symbol), "NAS")
         await self._throttle()
         try:
             params = {

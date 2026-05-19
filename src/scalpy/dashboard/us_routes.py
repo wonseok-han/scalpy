@@ -56,6 +56,7 @@ async def _get_us_broker() -> Any:
         account_no=settings.get("kis_account_no", ""),
         mock=settings.get("mock", True),
         exchange=settings.get("us_trading.exchange", "NASD"),
+        summer_time=settings.get("us_trading.summer_time", True),
     )
     await b.connect()
     if b._connected:
@@ -585,7 +586,6 @@ async def quant_config() -> dict[str, Any]:
         params["enabled"] = s.enabled
         params["display_name"] = s.display_name
         params["stop_loss_ratio"] = s.stop_loss_ratio
-        params["take_profit_ratio"] = s.take_profit_ratio
         strats[s.name] = params
     return {
         "quant": dict(quant),
@@ -601,9 +601,10 @@ async def get_settings() -> dict[str, Any]:
         r = _engine_ref._risk
         risk = {
             "stop_loss_ratio": float(r.stop_loss_ratio),
-            "take_profit_ratio": float(r.take_profit_ratio),
             "max_position_size": r.max_position_size,
             "max_open_positions": r.max_open_positions,
+            "trailing_activate_ratio": float(r.trailing_activate_ratio),
+            "trailing_stop_ratio": float(r.trailing_stop_ratio),
         }
     strats = {}
     if _registry_ref:

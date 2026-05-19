@@ -958,7 +958,6 @@ async def quant_config() -> dict[str, Any]:
         params["enabled"] = s.enabled
         params["display_name"] = s.display_name
         params["stop_loss_ratio"] = s.stop_loss_ratio
-        params["take_profit_ratio"] = s.take_profit_ratio
         strats[s.name] = params
     return {
         "quant": dict(quant),
@@ -975,7 +974,6 @@ async def get_settings() -> dict[str, Any]:
         r = _engine_ref._risk
         risk = {
             "stop_loss_ratio": float(r.stop_loss_ratio),
-            "take_profit_ratio": float(r.take_profit_ratio),
             "max_position_size": r.max_position_size,
             "max_open_positions": r.max_open_positions,
             "max_position_ratio": r.max_position_ratio,
@@ -1027,8 +1025,6 @@ async def update_settings(body: dict[str, Any]) -> dict[str, Any]:
         rm = _engine_ref._risk
         if r.get("stop_loss_ratio") is not None:
             rm.stop_loss_ratio = Decimal(str(r["stop_loss_ratio"]))
-        if r.get("take_profit_ratio") is not None:
-            rm.take_profit_ratio = Decimal(str(r["take_profit_ratio"]))
         if r.get("max_position_size") is not None:
             rm.max_position_size = int(r["max_position_size"])
         if r.get("max_open_positions") is not None:
@@ -1078,7 +1074,7 @@ async def persist_settings() -> dict[str, Any]:
     trading = d.setdefault("trading", {})
     for k in ("auto_start", "symbols", "max_position_size",
               "max_position_ratio", "max_open_positions",
-              "stop_loss_ratio", "take_profit_ratio",
+              "stop_loss_ratio",
               "trailing_activate_ratio", "trailing_stop_ratio"):
         v = settings.get(f"trading.{k}")
         if v is not None:
@@ -1096,7 +1092,6 @@ async def persist_settings() -> dict[str, Any]:
     if _engine_ref and _engine_ref._risk:
         rm = _engine_ref._risk
         trading["stop_loss_ratio"] = float(rm.stop_loss_ratio)
-        trading["take_profit_ratio"] = float(rm.take_profit_ratio)
         trading["max_position_size"] = rm.max_position_size
         trading["max_open_positions"] = rm.max_open_positions
         trading["max_position_ratio"] = rm.max_position_ratio

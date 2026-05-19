@@ -41,7 +41,7 @@ class TestTradingEngine:
         self.broker = MockBroker(initial_balance=Decimal("10000000"))
         self.registry = StrategyRegistry()
         self.registry.register(_AlwaysBuyStrategy())
-        self.risk = RiskManager(stop_loss_ratio=0.02, take_profit_ratio=0.03)
+        self.risk = RiskManager(stop_loss_ratio=0.02)
         self.engine = TradingEngine(self.broker, self.registry, self.risk)
         self.engine._is_market_hours = lambda: True
         self._time_patch = patch(
